@@ -1,0 +1,15 @@
+.env
+*.session
+data/
+tts_server.py
+tts_server.bat
+README.md
+chatlog/
+.github/
+macos/
+output/
+design/
+docs/
+scripts/
+*.session*
+*.sqlite*

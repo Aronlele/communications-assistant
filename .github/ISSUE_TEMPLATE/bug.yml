@@ -1,0 +1,23 @@
+name: 问题报告
+description: 使用合成资料复现问题，不提交账号资料或凭据
+title: "[问题] "
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: 版本与环境
+      description: 应用版本、系统版本、Apple Silicon 型号；不要填手机号、Token 或会话信息。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 操作与实际结果
+      description: 操作步骤、预期和实际结果，使用示例数据。
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: 已核对内容
+      description: 已检查的界面、权限和错误文字；只上传检查过的脱敏诊断。

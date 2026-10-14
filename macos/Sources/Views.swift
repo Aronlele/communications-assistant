@@ -1,0 +1,1166 @@
+import SwiftUI
+import AppKit
+
+// 显式引用状态包装器，兼容只有 Command Line Tools 的构建环境。
+typealias ViewState<Value> = SwiftUI.State<Value>
+
+func dateText(_ timestamp: Double) -> String {
+    guard timestamp > 0 else { return "暂无" }
+    return Date(timeIntervalSince1970: timestamp).formatted(date: .abbreviated, time: .standard)
+}
+
+struct Panel<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(title, systemImage: icon).font(.headline)
+            content
+        }
+        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.quaternary))
+    }
+}
+
+struct PageTitle: View {
+    let title: String
+    let subtitle: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.largeTitle.weight(.semibold))
+            Text(subtitle).foregroundStyle(.secondary)
+        }.padding(.bottom, 8)
+    }
+}
+
+struct AccountAvatar: View {
+    let identity: Object
+    let root: URL
+    var size: CGFloat = 36
+    var body: some View {
+        let relative = identity.string("avatar")
+        let path = root.appendingPathComponent(relative).standardizedFileURL
+        Group {
+            if !relative.isEmpty, !relative.contains(".."), path.path.hasPrefix(root.standardizedFileURL.path + "/"), let image = NSImage(contentsOf: path) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                ZStack {
+                    Circle().fill(Color.accentColor.opacity(0.15))
+                    Text(String(identity.string("name").prefix(1))).font(.system(size: size * 0.45, weight: .semibold)).foregroundStyle(.tint)
+                    if identity.string("name").isEmpty { Image(systemName: "person.fill").foregroundStyle(.tint) }
+                }
+            }
+        }.frame(width: size, height: size).clipShape(Circle()).accessibilityLabel("账号头像")
+    }
+}
+
+struct AccountMenu: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        HStack(spacing: 10) {
+            AccountAvatar(identity: model.identity, root: model.root)
+            VStack(alignment: .leading, spacing: 5) {
+                Menu {
+                    ForEach(model.accounts, id: \.slotID) { account in
+                        Button {
+                            model.selectAccount(account.string("slot"))
+                        } label: {
+                            let name = account.object("identity").string("name")
+                            Label((name.isEmpty ? "待登录账号" : name) + " · " + accountStatus(account), systemImage: account.string("slot") == model.selectedSlot ? "checkmark.circle.fill" : "person.crop.circle")
+                        }
+                    }
+                    if !model.demo {
+                        Divider()
+                        Button("添加 Telegram 账号…", systemImage: "person.badge.plus") { model.addAccount() }
+                    }
+                } label: {
+                    Text(model.accountName).font(.headline).lineLimit(1)
+                }.menuStyle(.borderlessButton).disabled(model.busy).accessibilityLabel("切换或添加账号：" + model.accountName)
+                Text(model.connection).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+    }
+}
+
+func accountStatus(_ account: Object) -> String {
+    if account.bool("error_present") { return account.bool("connected") ? "已连接 · 需检查" : "需检查连接" }
+    if account.bool("connected") { return account.bool("pause_all") ? "已连接 · 已暂停" : "已连接" }
+    return ["offline": "离线", "identity": "待确认", "phone": "待登录", "code": "待验证", "password": "待验证", "connecting": "连接中"][account.string("auth")] ?? "未连接"
+}
+
+extension Dictionary where Key == String, Value == Any {
+    var slotID: String { string("slot") }
+}
+
+struct MainView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) var openWindow
+    var body: some View {
+        NavigationSplitView {
+            VStack(alignment: .leading, spacing: 0) {
+                Label("通讯助手", systemImage: "paperplane.circle.fill")
+                    .font(.title2.weight(.semibold)).padding(20)
+                List(Destination.allCases, selection: $model.selection) { destination in
+                    Label(destination.rawValue, systemImage: destination.icon).tag(destination)
+                }.listStyle(.sidebar)
+                VStack(alignment: .leading, spacing: 6) {
+                    AccountMenu()
+                    if model.accounts.count > 1 { Text("\(model.accounts.filter { $0.bool("connected") }.count) / \(model.accounts.count) 个账号已连接").font(.caption).foregroundStyle(.secondary) }
+                    if model.demo { Text("所有数据均为演示示例").font(.caption).foregroundStyle(.orange) }
+                }.padding(18)
+            }.navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 260)
+        } detail: {
+            VStack(spacing: 0) {
+                if !model.error.isEmpty {
+                    HStack {
+                        Label(model.error, systemImage: "exclamationmark.triangle")
+                        Spacer()
+                        if model.engineUnavailable { Button("重启消息引擎") { model.retryEngine() } }
+                        Button { model.error = "" } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("关闭提示")
+                    }.font(.callout).padding(12).background(.orange.opacity(0.12))
+                }
+                if !model.info.isEmpty {
+                    HStack {
+                        Text(model.info).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { model.info = "" } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("关闭操作提示")
+                    }.font(.caption).padding(10).background(.quaternary.opacity(0.3))
+                }
+                if !model.ready && model.selection == .settings { LoginSettingsView() }
+                else if !model.ready { LoginView() }
+                else {
+                    switch model.selection ?? .overview {
+                    case .overview: OverviewView()
+                    case .reminders: RemindersView()
+                    case .archive: ArchiveView()
+                    case .automation: AutomationView()
+                    case .activity: ActivityView()
+                    case .settings: SettingsView()
+                    }
+                }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity).id(model.selectedSlot)
+        }
+        .frame(minWidth: 960, minHeight: 640)
+        .onAppear { model.openMain = { openWindow(id: "main") } }
+        .toolbar {
+            if model.busy { ProgressView().controlSize(.small) }
+            if model.ready {
+                Button(model.settings.bool("pause_all") ? "恢复当前账号" : "暂停当前账号") {
+                    model.control(model.settings.bool("pause_all") ? "resume_all" : "pause_all")
+                }
+            }
+        }
+        .sheet(isPresented: $model.showDiagnostics) { DiagnosticsView() }
+        .sheet(isPresented: $model.showContext) { ContextView() }
+        .alert("导出聊天记录", isPresented: $model.showExport) {
+            Button("取消", role: .cancel) { }
+            Button("选择保存位置") { model.export() }
+        } message: { Text(model.exportSummary) }
+    }
+}
+
+struct LoginView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var country = "CN:86"
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Image(systemName: "paperplane.circle").font(.system(size: 56)).foregroundStyle(.tint)
+                PageTitle(title: "让通讯工作更从容", subtitle: "集中管理消息提醒、聊天记录与固定规则。数据保存在这台 Mac。")
+                Panel(title: "连接自己的 Telegram 账号", icon: "person.crop.circle") {
+                    if model.effectiveAPI?.isTestOnly == true { Text("当前使用官方测试 API，仅供内部测试；正式产品配置仍待申请。").font(.caption).foregroundStyle(.orange) }
+                    switch model.state.string("auth") {
+                    case "identity":
+                        AccountAvatar(identity: model.identity, root: model.root, size: 64)
+                        Text(model.identity.string("name")).font(.title2)
+                        Text("账号 ID：\(String(Int64(model.identity.number("id")))) · \(model.identity.string("phone"))").foregroundStyle(.secondary)
+                        Text("请确认这是要使用的账号。恢复登录后，自动回复仍需手动开启。")
+                        Button("确认并进入应用") { model.request("confirm_identity") }.buttonStyle(.borderedProminent).disabled(model.busy)
+                        Button("取消本次登录") { model.cancelLogin() }.disabled(model.busy)
+                    case "phone", "code", "password": authFields
+                    default:
+                        Text("登录你的 Telegram 账号，开启消息提醒与本地归档。验证码和二次验证密码不会保存。")
+                            .foregroundStyle(.secondary)
+                        if model.effectiveAPI == nil { Text(model.missingAPIMessage).foregroundStyle(.orange) }
+                        if model.apiSource == .custom { Text("当前使用自定义连接配置").font(.caption).foregroundStyle(.secondary) }
+                        Button("登录 Telegram") { model.connect() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.busy || model.effectiveAPI == nil || ["starting", "connecting"].contains(model.state.string("auth")))
+                    }
+                }
+                HStack {
+                    Button("先体验本地演示") { model.switchMode(true) }.disabled(model.busy)
+                    Spacer()
+                    Button("高级设置…") { model.showAdvancedAPI = true; model.selection = .settings }
+                }
+                HStack(alignment: .top, spacing: 24) {
+                    Label("关闭窗口后继续运行", systemImage: "menubar.rectangle")
+                    Label("退出应用后停止工作", systemImage: "power")
+                    Label("自动发送默认关闭", systemImage: "hand.raised")
+                }.font(.caption).foregroundStyle(.secondary)
+                Text("Mac 睡眠或断网期间无法实时接收消息；恢复连接后会尝试补齐所选会话的归档。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.frame(maxWidth: 640, alignment: .leading).padding(40).frame(maxWidth: .infinity)
+        }
+    }
+    @ViewBuilder var authFields: some View {
+        if model.state.string("auth") == "phone" {
+            Picker("国家/地区区号", selection: $country) {
+                ForEach(model.state.rows("countries"), id: \.countryKey) { row in Text(row.string("name")).tag(row.string("key")) }
+            }
+            TextField("手机号（包含国家区号）", text: $model.phone).textFieldStyle(.roundedBorder)
+            Button("获取验证码") { sendCode() }.buttonStyle(.borderedProminent).disabled(model.busy)
+            Text("可输入本地号码，或直接粘贴以 + 开头的完整国际号码。国家列表不可用时仍支持完整号码。").font(.caption).foregroundStyle(.secondary)
+        } else if model.state.string("auth") == "code" {
+            Text("请从 Telegram 官方客户端或短信中获取验证码。").foregroundStyle(.secondary)
+            SecureField("验证码", text: $model.code).textFieldStyle(.roundedBorder)
+            Button("验证登录") { model.loginCode() }.buttonStyle(.borderedProminent).disabled(model.busy)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let remaining = max(0, Int(ceil(max(model.state.number("code_resend_at"), model.state.number("cooldown")) - context.date.timeIntervalSince1970)))
+                Button(remaining > 0 ? "重发验证码（等待 \(remaining) 秒）" : "重发验证码") { sendCode() }.disabled(model.busy || remaining > 0)
+            }
+        } else {
+            SecureField("Telegram 二次验证密码", text: $model.password).textFieldStyle(.roundedBorder)
+            Button("完成验证") { model.loginPassword() }.buttonStyle(.borderedProminent).disabled(model.busy)
+        }
+        Button("取消登录") { model.cancelLogin() }.disabled(model.busy)
+    }
+    func sendCode() {
+        if model.state.string("auth") == "code" { model.request("resend_code"); return }
+        var value = model.phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        for character in [" ", "-", "(", ")"] { value = value.replacingOccurrences(of: character, with: "") }
+        if !value.hasPrefix("+") { value = "+" + (country.split(separator: ":").last.map(String.init) ?? "86") + value }
+        model.phone = value; model.request("send_code", ["phone": value])
+    }
+}
+
+struct LoginSettingsView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                PageTitle(title: "设置", subtitle: "普通用户直接登录 Telegram，自定义连接配置仅供高级使用。")
+                Panel(title: "账号", icon: "person.crop.circle") {
+                    Text(model.connection).foregroundStyle(.secondary)
+                    Button("返回登录") { model.selection = .overview }
+                }
+                DisclosureGroup("高级设置", isExpanded: $model.showAdvancedAPI) {
+                    APISettingsView().padding(.top, 12)
+                    DeviceProfileView().padding(.top, 12)
+                }
+            }.padding(28)
+        }
+    }
+}
+
+struct APISettingsView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var source: TelegramAPISource = .builtIn
+    @ViewState private var apiID = ""
+    @ViewState private var apiHash = ""
+    @ViewState private var forget = false
+    var body: some View {
+        Panel(title: "Telegram 连接配置", icon: "network") {
+            Text("当前使用：\(model.apiSource.title)").font(.caption).foregroundStyle(.secondary)
+            Text(model.builtInAPI == nil ? "产品内置配置尚未就绪" : "产品内置配置已就绪").foregroundStyle(.secondary)
+            Picker("连接配置", selection: $source) {
+                ForEach(TelegramAPISource.allCases) { value in Text(value.title).tag(value) }
+            }
+            if source == .custom {
+                Text("仅在需要使用自己的开发者配置时填写。API Hash 保存在 macOS 钥匙串中。")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("API ID", text: $apiID).textFieldStyle(.roundedBorder)
+                SecureField(model.customAPI == nil ? "API Hash" : "API Hash（已保存；留空保持原值）", text: $apiHash).textFieldStyle(.roundedBorder)
+                Link("获取自己的 API 配置 ↗", destination: URL(string: "https://my.telegram.org/apps")!)
+            }
+            HStack {
+                Button("保存连接配置") {
+                    if model.saveAPIConfiguration(source: source, apiID: apiID, apiHash: apiHash) { apiHash = "" }
+                }.disabled(!model.canChangeAPI)
+                if model.hasSavedAPI { Button("清除自定义配置", role: .destructive) { forget = true }.disabled(!model.canChangeAPI) }
+            }
+            if model.canUseMatchingBuiltInAPI { Button("使用相同的内置配置") { model.useMatchingBuiltInAPI() } }
+            if !model.canChangeAPI {
+                Text(model.demo ? "演示模式不会使用或更改真实连接配置。" : "修改配置前，请先退出账号或取消正在进行的登录，并等待操作结束。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { load() }
+        .onChange(of: model.apiSource) { _, _ in load() }
+        .onChange(of: model.customAPI) { _, value in if source == .custom { apiID = value.map { String($0.apiID) } ?? ""; apiHash = "" } }
+        .onChange(of: source) { _, value in if value == .custom { model.loadCustomAPI() } }
+        .alert("清除自定义 API 配置", isPresented: $forget) {
+            Button("取消", role: .cancel) { }
+            Button("清除", role: .destructive) { model.forgetAPI(); load() }
+        } message: { Text("删除保存的自定义 API ID 和钥匙串中的 API Hash，恢复产品内置配置。已有归档保留。") }
+    }
+    func load() {
+        source = model.apiSource
+        apiID = model.customAPI.map { String($0.apiID) } ?? ""
+        apiHash = ""
+    }
+}
+
+struct OverviewView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                PageTitle(title: "概览", subtitle: "\(model.accountName)，你的通讯工作状态都在这里。")
+                Panel(title: model.connection, icon: "network") {
+                    HStack {
+                        Text("最近同步：\(dateText(model.state.number("last_sync")))").foregroundStyle(.secondary)
+                        Spacer()
+                        if model.state.string("auth") == "offline" { Button("重新连接") { model.connect() } }
+                        Button("同步归档") { model.request("sync") }
+                    }
+                    if model.settings.bool("pause_all") { Label("全部功能已暂停，继续接收已有发送的回执", systemImage: "pause.circle").foregroundStyle(.orange) }
+                }
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+                    module("消息提醒", "bell", model.settings.bool("reminders") ? "已开启" : "已关闭", "系统通知与来源语音", .reminders)
+                    module("聊天归档", "archivebox", "\(model.conversations.filter { $0.bool("selected") }.count) 个会话", "已使用 \(ByteCountFormatter.string(fromByteCount: Int64(model.state.number("usage")), countStyle: .file))", .archive)
+                    module("自动回复", "bolt", model.settings.object("rule").bool("automatic") ? "已开启固定模板回复" : "仅提醒", model.settings.bool("pause_sends") ? "新发送已暂停" : "发送结果不明时不会重试", .automation)
+                    module("在线状态策略", "clock", model.settings.bool("online") ? "已启用实验功能" : "默认关闭", "连接状态与他人看到的在线状态不同", .settings)
+                }
+                if model.state.bool("quota_paused") {
+                    Panel(title: "归档已暂停", icon: "exclamationmark.circle") {
+                        Text("本地容量已到上限或数据无法安全写入。清理记录后再继续归档。")
+                        Button("前往数据管理") { model.selection = .settings }
+                    }
+                }
+                let attention = model.executions.filter { $0.string("status") == "send_unknown" || $0.bool("receipt_overdue") }
+                if !attention.isEmpty {
+                    Panel(title: "\(attention.count) 条发送需要核对", icon: "exclamationmark.bubble") {
+                        Text("尚未收到登记回执或发送结果无法确认。请在原会话中核对。")
+                        Button("查看执行记录") { model.selection = .automation }
+                    }
+                }
+                Panel(title: "最近活动", icon: "clock.arrow.circlepath") {
+                    ActivityRows(rows: Array(model.activities.prefix(10)))
+                }
+            }.padding(28)
+        }.background(Color(nsColor: .windowBackgroundColor))
+    }
+    func module(_ title: String, _ icon: String, _ status: String, _ detail: String, _ destination: Destination) -> some View {
+        Panel(title: title, icon: icon) {
+            Text(status).font(.title3.weight(.semibold))
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+            Button("管理") { model.selection = destination }
+        }
+    }
+}
+
+struct RemindersView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                PageTitle(title: "消息提醒", subtitle: "只在需要的时候提醒你。语音默认只播报来源。")
+                Panel(title: "提醒方式", icon: "bell.badge") {
+                    settingToggle("开启消息提醒", "reminders")
+                    settingToggle("提醒私聊消息", "private")
+                    settingToggle("提醒群组中提及我的消息", "mentions")
+                    Divider()
+                    settingToggle("语音播报消息来源", "voice")
+                    settingToggle("播放系统通知声音", "sound")
+                    settingToggle("在系统通知中显示正文预览", "preview")
+                    settingToggle("语音朗读消息正文", "voice_content")
+                    Text("正文朗读由你主动开启；会话单独设置可以覆盖默认提醒方式，免打扰优先。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Text(model.notificationStatus).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("测试通知") { model.testNotification() }
+                        Button("测试语音") { model.testVoice() }
+                    }
+                    Text("语音状态：\(model.voiceStatus)").font(.caption).foregroundStyle(.secondary)
+                }
+                Panel(title: "安静一会儿", icon: "moon") {
+                    HStack {
+                        Button("暂停提醒 30 分钟") { model.control("pause_reminders") }
+                        Button("恢复提醒") { model.control("resume_reminders") }
+                    }
+                    if model.settings.number("paused_reminders_until") > Date().timeIntervalSince1970 {
+                        Text("暂停至 \(dateText(model.settings.number("paused_reminders_until")))").foregroundStyle(.orange)
+                    }
+                    Text("只暂停通知和语音。归档与已开启的自动回复继续运行。相同会话 10 秒内的消息合并提醒。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                QuietHoursView()
+                Panel(title: "免打扰会话", icon: "bell.slash") {
+                    Text("勾选会话表示免打扰。单独设置仍只提醒私聊和被提及消息，普通群消息不会触发。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if model.conversations.isEmpty { Text("连接账号后会显示会话列表").foregroundStyle(.secondary) }
+                    ForEach(model.conversations, id: \.chatID) { row in
+                        HStack {
+                        Toggle(row.string("title"), isOn: Binding(get: {
+                            (model.settings["excluded"] as? [Int64] ?? []).contains(Int64(row.number("chat")))
+                        }, set: { excluded in
+                            var ids = model.settings["excluded"] as? [Int64] ?? []
+                            let id = Int64(row.number("chat"))
+                            ids.removeAll { $0 == id }
+                            if excluded { ids.append(id) }
+                            model.change("excluded", ids)
+                        }))
+                        Spacer()
+                        Picker("提醒方式", selection: Binding(get: {
+                            model.settings.object("conversation_modes").string(String(row.chatID)).isEmpty ? "default" : model.settings.object("conversation_modes").string(String(row.chatID))
+                        }, set: { value in
+                            var modes = model.settings.object("conversation_modes"); modes[String(row.chatID)] = value
+                            model.change("conversation_modes", modes)
+                        })) {
+                            Text("跟随默认").tag("default"); Text("静音").tag("silent")
+                            Text("仅通知").tag("notification"); Text("仅语音").tag("voice"); Text("通知和语音").tag("both")
+                        }.frame(width: 150)
+                        }
+                    }
+                }
+            }.padding(28)
+        }
+    }
+    func settingToggle(_ title: String, _ key: String) -> some View {
+        Toggle(title, isOn: Binding(get: { model.settings.bool(key) }, set: { model.change(key, $0) }))
+    }
+}
+
+extension Dictionary where Key == String, Value == Any {
+    var countryKey: String { string("key") }
+    var chatID: Int64 { Int64(number("chat")) }
+    var messageKey: String { "\(chatID):\(Int64(number("id")))" }
+    var activityID: Int64 { Int64(number("id")) }
+    var executionKey: String { "\(Int64(number("target"))):\(string("number"))" }
+    var promptKey: String { "\(Int64(number("target"))):\(Int64(number("message_id")))" }
+}
+
+struct ArchiveView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var showConversations = false
+    @ViewState private var mode = "recent"
+    @ViewState private var archiveStart = Date().addingTimeInterval(-7 * 86400)
+    @ViewState private var showImport = false
+    @ViewState private var selectedMessage: String?
+    @FocusState private var searchFocused: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            PageTitle(title: "聊天归档", subtitle: "记录你选择的会话，随时查找上下文。停止归档会保留已有记录。")
+            HStack {
+                TextField("搜索消息内容", text: $model.query).textFieldStyle(.roundedBorder).focused($searchFocused).onSubmit { model.search() }
+                Picker("会话", selection: $model.searchChat) {
+                    Text("全部会话").tag("0")
+                    ForEach(model.conversations, id: \.chatID) { row in Text(row.string("title")).tag(String(row.chatID)) }
+                }.frame(width: 200)
+                Button("搜索") { model.search() }.keyboardShortcut(.return, modifiers: [])
+                Button("选择归档会话") { showConversations = true }
+            }
+            HStack {
+                TextField("发送者", text: $model.sender).textFieldStyle(.roundedBorder).frame(width: 160)
+                Toggle("按日期筛选", isOn: $model.dateFilter)
+                if model.dateFilter {
+                    DatePicker("从", selection: $model.startDate, displayedComponents: .date).labelsHidden()
+                    DatePicker("至", selection: $model.endDate, displayedComponents: .date).labelsHidden()
+                }
+                Spacer()
+            }.font(.caption)
+            Toggle("显示已删除消息的状态", isOn: $model.includeDeleted).font(.caption).onChange(of: model.includeDeleted) { _, _ in model.search() }
+            HStack {
+                Spacer()
+                Menu("导出") {
+                    Button("导出 JSON") { model.previewExport("json") }
+                    Button("导出文本") { model.previewExport("txt") }
+                }
+                Toggle("包含图片", isOn: $model.exportMedia)
+                Button("导入旧记录") { showImport = true }
+            }.font(.caption)
+            Divider()
+            HStack {
+                Text("找到 \(model.resultCount) 条 · 已显示 \(model.results.count) 条").font(.caption).foregroundStyle(.secondary)
+                if (model.state["syncing_chats"] as? [Int64] ?? []).count > 0 { ProgressView().controlSize(.small); Text("归档补齐中").font(.caption) }
+                Spacer()
+                Button(model.settings.bool("archive_paused") ? "恢复归档" : "暂停归档") { model.control(model.settings.bool("archive_paused") ? "resume_archive" : "pause_archive") }
+            }
+            HSplitView {
+                List(selection: $model.searchChat) {
+                    Text("全部归档").tag("0")
+                    ForEach(model.conversations.filter { $0.bool("selected") || $0.number("count") > 0 || String($0.chatID) == model.searchChat }, id: \.chatID) { row in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(row.string("title")); Text("\(Int(row.number("count"))) 条").font(.caption).foregroundStyle(.secondary)
+                        }.tag(String(row.chatID))
+                    }
+                }.frame(minWidth: 135, idealWidth: 160, maxWidth: 210, maxHeight: .infinity)
+                if model.results.isEmpty {
+                    ContentUnavailableView("没有匹配记录", systemImage: "archivebox", description: Text("选择归档会话或调整条件。"))
+                        .frame(minWidth: 200, maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: $selectedMessage) {
+                        ForEach(model.results, id: \.messageKey) { row in MessageRow(message: row).tag(row.messageKey) }
+                        if model.results.count < model.resultCount { Button("加载更多") { model.search(offset: model.results.count) } }
+                    }.listStyle(.inset).frame(minWidth: 280, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack { Text("消息上下文").font(.headline); Spacer(); if model.searchChat != "0" { Button("原会话") { model.openTelegramChat(Int64(model.searchChat) ?? 0) } } }
+                    if selectedMessage == nil { Text("选择一条消息查看详情").foregroundStyle(.secondary) }
+                    else { ScrollView { LazyVStack(alignment: .leading) { ForEach(model.context, id: \.messageKey) { row in MessageRow(message: row, showContextAction: false) } } } }
+                }.padding(12).frame(minWidth: 215, idealWidth: 270, maxWidth: 380, maxHeight: .infinity, alignment: .topLeading)
+            }.frame(minHeight: 240, maxHeight: .infinity)
+        }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { model.search(); if model.searchFocusRequest > 0 { searchFocused = true } }
+        .onChange(of: model.searchFocusRequest) { _, _ in searchFocused = true }
+        .onChange(of: model.searchChat) { _, _ in selectedMessage = nil; model.context = []; model.search() }
+        .onChange(of: selectedMessage) { _, key in if let row = model.results.first(where: { $0.messageKey == key }) { model.openContext(row, showSheet: false) } }
+        .sheet(isPresented: $showConversations) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("选择归档会话").font(.title2.weight(.semibold))
+                Text("首版支持私聊和群组；频道暂不支持。历史记录以平台当前可访问内容为准。")
+                    .foregroundStyle(.secondary)
+                Picker("首次归档范围", selection: $mode) {
+                    Text("最近 300 条").tag("recent"); Text("仅新消息").tag("live"); Text("从指定日期开始").tag("date")
+                }
+                if mode == "date" { DatePicker("开始日期", selection: $archiveStart, displayedComponents: .date) }
+                List(model.conversations, id: \.chatID) { row in
+                    HStack {
+                        Toggle(row.string("title"), isOn: Binding(get: { row.bool("selected") }, set: {
+                            model.request("archive_select", ["chat": row.chatID, "selected": $0, "mode": mode,
+                                                              "start": mode == "date" ? Calendar.current.startOfDay(for: archiveStart).timeIntervalSince1970 : 0])
+                        })).disabled(row.string("kind") == "channel")
+                        Spacer()
+                        Text("\(Int(row.number("count"))) 条").foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Button("刷新会话") { model.request("dialogs") }
+                    Spacer()
+                    Button("完成") { showConversations = false; model.search() }.keyboardShortcut(.defaultAction)
+                }
+            }.padding(24).frame(width: 640, height: 520)
+        }
+        .sheet(isPresented: $showImport) { LegacyImportView() }
+    }
+}
+
+struct LegacyImportView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    @ViewState private var path = ""
+    @ViewState private var chat = "0"
+    @ViewState private var zone = "Asia/Shanghai"
+    @ViewState private var preview: Object = [:]
+    @ViewState private var confirmed = false
+    @ViewState private var includeMedia = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("导入旧项目的聊天文本").font(.title2)
+            Text("旧文件不含账号与会话 ID，需由你确认归属。原文件保留不动；已有同编号消息优先。可导入文本所引用的同目录 media 图片，单张最大 10 MB。")
+                .foregroundStyle(.secondary)
+            HStack {
+                Text(path.isEmpty ? "未选择文件" : URL(fileURLWithPath: path).lastPathComponent)
+                Spacer()
+                Button("选择文本文件") {
+                    let panel = NSOpenPanel(); panel.allowedContentTypes = [.plainText]; panel.canChooseDirectories = false
+                    if panel.runModal() == .OK, let url = panel.url { path = url.path; preview = [:]; confirmed = false }
+                }
+            }
+            Picker("对应会话", selection: $chat) {
+                Text("请选择").tag("0")
+                ForEach(model.conversations, id: \.chatID) { row in Text(row.string("title")).tag(String(row.chatID)) }
+            }
+            TextField("旧记录使用的时区", text: $zone).textFieldStyle(.roundedBorder)
+            Button("预览文件") {
+                model.request("import_preview", ["path": path, "timezone": zone]) { preview = $0 ?? [:] }
+            }.disabled(path.isEmpty)
+            if !preview.isEmpty {
+                Text("识别 \(Int(preview.number("count"))) 条 · \(dateText(preview.number("start"))) 至 \(dateText(preview.number("end")))")
+                ForEach(preview.rows("first"), id: \.activityID) { row in Text("\(row.string("sender"))：\(row.string("text"))").lineLimit(2).foregroundStyle(.secondary) }
+            }
+            Toggle("确认这些记录属于当前账号：\(model.accountName)", isOn: $confirmed)
+            Toggle("导入关联图片（预览识别 \(Int(preview.number("images"))) 张）", isOn: $includeMedia)
+            Spacer()
+            HStack {
+                Button("取消") { dismiss() }; Spacer()
+                Button("确认导入") {
+                    model.request("import_legacy", ["path": path, "timezone": zone, "chat": Int64(chat) ?? 0,
+                                                    "confirmed_account": model.state.number("account"), "include_media": includeMedia]) { result in
+                        if result != nil { model.search(); dismiss() }
+                    }
+                }.disabled(!confirmed || chat == "0" || preview.isEmpty).buttonStyle(.borderedProminent)
+            }
+        }.padding(24).frame(width: 650, height: 480)
+    }
+}
+
+struct MessageRow: View {
+    @EnvironmentObject var model: AppModel
+    let message: Object
+    var showContextAction = true
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(message.string("sender")).font(.headline)
+                Spacer()
+            }
+            if !message.string("title").isEmpty { Text(message.string("title")).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            Text(dateText(message.number("date"))).font(.caption).foregroundStyle(.secondary)
+            Text(message.bool("deleted") ? "这条消息已被删除" : message.string("text").isEmpty ? "[\(message.string("attachment"))]" : message.string("text"))
+                .textSelection(.enabled).lineLimit(showContextAction ? 8 : nil)
+            if message.bool("edited") { Text("已编辑\(message.number("edited_at") > 0 ? " · " + dateText(message.number("edited_at")) : "")").font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                if message.bool("forwarded") { Text("转发消息").font(.caption).foregroundStyle(.secondary) }
+                if message.number("reply_to") > 0 { Text("回复 #\(Int64(message.number("reply_to")))").font(.caption).foregroundStyle(.secondary) }
+            }
+            if !message.string("attachment").isEmpty { Text(message.string("attachment")).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+            HStack {
+                if !message.string("media").isEmpty { Button("查看图片") { model.openMedia(message) } }
+                Spacer()
+                if showContextAction { Button("上下文") { model.openContext(message) }.buttonStyle(.borderless) }
+            }
+            if ["failed", "too_large", "unknown_size", "not_requested"].contains(message.string("media_state")) {
+                HStack {
+                    Text(["failed": "图片下载失败", "too_large": "图片超过 10 MB，未下载", "unknown_size": "无法确认图片大小，未下载", "not_requested": "图片未归档"][message.string("media_state")] ?? "")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if message.string("media_state") == "failed" {
+                        Text("已尝试 \(Int(message.number("media_attempts"))) 次").font(.caption)
+                        Button("重试图片") { model.request("retry_media", ["chat": message.chatID, "id": Int64(message.number("id"))]) { _ in model.search() } }.disabled(!model.state.bool("connected"))
+                    }
+                }
+            }
+        }.padding(.vertical, 10)
+    }
+}
+
+struct ContextView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        VStack(alignment: .leading) {
+            HStack { Text("会话上下文").font(.title2); Spacer(); Button("关闭") { model.showContext = false } }
+            Text(model.contextNote).foregroundStyle(.secondary)
+            if let row = model.context.first { Button("打开原会话") { model.openTelegramChat(row.chatID) } }
+            List(model.context, id: \.messageKey) { row in MessageRow(message: row, showContextAction: false) }
+        }.padding(24).frame(width: 760, height: 560)
+    }
+}
+
+struct AutomationView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var target = ""
+    @ViewState private var sample = "🔔 查岗提醒（编号 123）\n请在 5 分钟内只回复下面的关键词：\n今天完成\n回复时限说明：\n以机器人记录为准"
+    @ViewState private var confirmEnable = false
+    @ViewState private var enableTarget: Int64 = 0
+    @ViewState private var enableTitle = ""
+    @ViewState private var testText = "通讯助手连接测试"
+    @ViewState private var testTarget: Int64 = 0
+    @ViewState private var testTitle = ""
+    @ViewState private var confirmedTestText = ""
+    @ViewState private var showTest = false
+    @ViewState private var userTest = false
+    @ViewState private var limited = false
+    @ViewState private var sendingZone = "Asia/Shanghai"
+    @ViewState private var sendingWeekly = Array(repeating: "", count: 7)
+    @ViewState private var replyMode = "keyword"
+    @ViewState private var matchMode = "exact"
+    @ViewState private var matchText = ""
+    @ViewState private var fixedReply = "1"
+    @ViewState private var validMinutes = 5
+    @ViewState private var enableSummary = ""
+    var rule: Object { model.settings.object("rule") }
+    var templateDirty: Bool {
+        replyMode != rule.string("mode") || matchMode != rule.string("match_mode") ||
+        matchText != rule.string("match_text") || fixedReply != rule.string("reply_text") || validMinutes != Int(rule.number("valid_minutes"))
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                PageTitle(title: "自动化", subtitle: "为当前账号选择对象、匹配提示和回复内容，预览后确认开启。")
+                Panel(title: "查岗回复规则", icon: "bolt.shield") {
+                    TextField("机器人或联系人用户名、数字 ID", text: $target).textFieldStyle(.roundedBorder)
+                    HStack {
+                        Button("保存为仅提醒") {
+                            model.request("rule", ["target": target, "automatic": false, "allow_user_test": userTest]) { result in
+                                if let result {
+                                    let saved = result.object("settings").object("rule")
+                                    target = saved.number("target") > 0 ? String(Int64(saved.number("target"))) : ""
+                                    userTest = saved.bool("allow_user_test")
+                                }
+                            }
+                        }.disabled(model.demo)
+                        if rule.number("target") > 0 {
+                            Button(rule.bool("automatic") ? "关闭自动回复" : "开启自动回复") {
+                                if rule.bool("automatic") { model.request("rule", ["target": String(Int64(rule.number("target"))), "automatic": false]) }
+                                else {
+                                    enableTarget = Int64(rule.number("target")); enableTitle = rule.string("title")
+                                    enableSummary = rule.string("mode") == "fixed" ? "匹配方式：\(rule.string("match_mode") == "exact" ? "全文相同" : "包含指定文本")\n提示：\(rule.string("match_text"))\n将回复：\(rule.string("reply_text"))\n本地有效期：\(Int(rule.number("valid_minutes"))) 分钟；每条消息只提交一次，登记未核实。" : "将发送新查岗提示中的精确关键词，每个编号只提交一次。"
+                                    confirmEnable = true
+                                }
+                            }.disabled(model.demo || (!rule.bool("automatic") && (!rule.bool("preview_validated") || templateDirty || target != String(Int64(rule.number("target"))) || userTest != rule.bool("allow_user_test"))))
+                        }
+                        Spacer()
+                        Button(model.settings.bool("pause_sends") ? "恢复新发送" : "暂停新发送") {
+                            model.control(model.settings.bool("pause_sends") ? "resume_sends" : "pause_sends")
+                        }
+                    }
+                    if rule.number("target") > 0 {
+                        Text("绑定：\(rule.string("title")) · ID \(String(Int64(rule.number("target"))))")
+                        Text(rule.bool("automatic") ? "已开启 · 只处理本次启动及启用之后的新提示" : "仅提醒 · 不自动发送").foregroundStyle(rule.bool("automatic") ? Color.accentColor : .secondary)
+                    }
+                    Text("默认只选择机器人；普通联系人需先开启下方允许选项。转发、群消息、过期提示和旧提示均不会自动回复。关闭规则后仍处理已有编号发送的登记回执。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if model.demo { Text("演示模式禁止自动发送。").foregroundStyle(.orange) }
+                    Toggle("允许选择普通联系人", isOn: $userTest)
+                    if rule.bool("allow_user_test") { Text("当前选择普通联系人：开启时请核对身份和实际发送内容，不能绑定本人。").foregroundStyle(.orange) }
+                    if !rule.bool("preview_validated") { Text("开启前请保存回复方式，并在下方成功预览来自此对象的提示。").font(.caption).foregroundStyle(.secondary) }
+                    Button("预览并导入旧发送账本") { model.chooseLegacyLedger() }.disabled(model.busy || rule.number("target") == 0)
+                }
+                Panel(title: "自定义提示与回复", icon: "slider.horizontal.3") {
+                    Picker("回复方式", selection: $replyMode) {
+                        Text("从查岗提示提取关键词").tag("keyword")
+                        Text("匹配提示，回复固定内容").tag("fixed")
+                    }
+                    if replyMode == "fixed" {
+                        Picker("提示匹配方式", selection: $matchMode) {
+                            Text("全文相同").tag("exact")
+                            Text("包含指定文本").tag("contains")
+                        }
+                        Text("需要匹配的提示文本")
+                        TextEditor(text: $matchText).font(.body.monospaced()).frame(height: 90)
+                        TextField("固定回复内容，例如 1 或 在岗", text: $fixedReply).textFieldStyle(.roundedBorder)
+                        HStack {
+                            Text("本地回复有效期（分钟）")
+                            TextField("1–1440", value: $validMinutes, formatter: NumberFormatter()).frame(width: 90).textFieldStyle(.roundedBorder)
+                        }
+                        Text("有效期从消息发出时间计算，默认 5 分钟，是本地防止回复旧消息的限制。此模式未配置登记回执，仅记录发送结果。全文匹配忽略首尾空白及换行格式；包含匹配范围更宽，请完整预览。").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("兼容现有编号、关键词和回复时限模板；关键词可随每条提示变化，并按同编号回执核对登记。").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("保存回复方式，恢复仅提醒") {
+                        model.request("reply_template", ["mode": replyMode, "match_mode": matchMode, "match_text": matchText, "reply_text": fixedReply, "valid_minutes": validMinutes]) { result in
+                            if let result { loadTemplate(result.object("settings").object("rule")); model.preview = [:]; model.info = "回复方式已保存，请预览提示后再确认开启" }
+                        }
+                    }.disabled(model.demo || model.busy || model.state.number("account") <= 0)
+                    if templateDirty { Text("修改尚未保存。先保存，再预览及开启；当前已保存规则仍按原设置运行。").font(.caption).foregroundStyle(.orange) }
+                }
+                Panel(title: "手动连接测试", icon: "paperplane") {
+                    TextField("单行测试消息，最多 100 字符", text: $testText).textFieldStyle(.roundedBorder)
+                    Button("发送测试…") {
+                        testTarget = Int64(rule.number("target")); testTitle = rule.string("title"); confirmedTestText = testText; showTest = true
+                    }.disabled(model.demo || model.busy || rule.number("target") == 0 || !model.state.bool("connected"))
+                    Text("测试会向当前机器人发送真实消息，需单独核对目标与内容，不构成查岗登记确认。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Panel(title: "模板预览", icon: "doc.text.magnifyingglass") {
+                    TextEditor(text: $sample).font(.body.monospaced()).frame(height: 130)
+                    Button("识别预览，不发送") { model.request("preview", ["text": sample]) { model.preview = $0 ?? [:] } }.disabled(templateDirty)
+                    if !model.preview.isEmpty {
+                        Text(model.preview.bool("recognized") ? (model.preview.string("reply_mode") == "fixed" ? "匹配成功 · 将回复：\(model.preview.string("keyword")) · 本地有效期 \(Int(model.preview.number("window_minutes"))) 分钟 · 登记未核实" : "编号 \(model.preview.string("number")) · \(Int(model.preview.number("window_minutes"))) 分钟 · 将回复：\(model.preview.string("keyword"))") : "未匹配已保存的规则，不会自动回复这条消息")
+                            .textSelection(.enabled).foregroundStyle(.secondary)
+                    }
+                }
+                Panel(title: "允许发送时段", icon: "calendar.badge.clock") {
+                    Toggle("限制自动回复的时间", isOn: $limited)
+                    Text("默认随时允许；启用限制后，空白时段禁止发送。这与在线状态策略独立。").font(.caption).foregroundStyle(.secondary)
+                    if limited {
+                        TextField("IANA 时区", text: $sendingZone).textFieldStyle(.roundedBorder)
+                        ForEach(0..<7, id: \.self) { day in
+                            HStack {
+                                Text(["周一", "周二", "周三", "周四", "周五", "周六", "周日"][day]).frame(width: 48)
+                                TextField("09:00-18:00，多段用逗号分隔", text: $sendingWeekly[day]).textFieldStyle(.roundedBorder)
+                            }
+                        }
+                    }
+                    Button("保存发送时段") {
+                        guard let weekly = parseWeekly(sendingWeekly) else { model.error = "时间段应使用 09:00-18:00 格式"; return }
+                        model.request("rule_hours", ["limited": limited, "timezone": sendingZone, "weekly": weekly])
+                    }
+                    Text("修改时段后恢复为仅提醒，确认后再启用自动回复。").font(.caption).foregroundStyle(.secondary)
+                }
+                Panel(title: "执行记录", icon: "list.bullet.rectangle") {
+                    if model.executions.isEmpty { Text("暂无发送记录。规则默认只提醒。").foregroundStyle(.secondary) }
+                    ForEach(model.executions, id: \.executionKey) { row in
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(reference(row.string("number"))) · \(status(row.string("status")))").font(.headline)
+                                Text(dateText(row.number("updated"))).font(.caption).foregroundStyle(.secondary)
+                                if row.number("deadline") > 0 { Text("\(row.string("number").hasPrefix("message:") ? "本地有效期截止" : "响应截止")：\(dateText(row.number("deadline")))").font(.caption).foregroundStyle(.secondary) }
+                                if row.bool("receipt_overdue") { Text("已超过响应截止 5 分钟，仍未收到同编号回执，请核对原会话").font(.caption).foregroundStyle(.orange) }
+                                if row.string("status") == "send_unknown" { Text("结果待核对，不会自动重试").font(.caption).foregroundStyle(.orange) }
+                            }
+                            Spacer()
+                            Button("打开会话") {
+                                model.openTelegramChat(Int64(row.number("target")))
+                            }
+                            Button("复制回复内容") {
+                                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(row.string("keyword"), forType: .string)
+                            }.disabled(row.string("keyword").isEmpty)
+                        }.padding(.vertical, 6)
+                    }
+                }
+                Panel(title: "仅提醒与跳过的提示", icon: "bell.badge") {
+                    let prompts = model.state.rows("prompts").filter { ["reminder", "skipped"].contains($0.string("mode")) }
+                    if prompts.isEmpty { Text("暂无提示记录。关键词按本地保留期清理。").foregroundStyle(.secondary) }
+                    ForEach(prompts, id: \.promptKey) { row in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(reference(row.string("number"))) · \(row.string("mode") == "reminder" ? "仅提醒" : "已跳过")").font(.headline)
+                            Text("回复内容：\(row.string("keyword")) · 截止：\(dateText(row.number("deadline")))").textSelection(.enabled)
+                            if !row.string("reason").isEmpty { Text(row.string("reason")).font(.caption).foregroundStyle(.secondary) }
+                            HStack {
+                                Button("打开来源会话") { model.openTelegramChat(Int64(row.number("target"))) }
+                                Button("复制回复内容") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(row.string("keyword"), forType: .string) }
+                            }
+                        }.padding(.vertical, 6)
+                    }
+                }
+            }.padding(28)
+        }
+        .onAppear {
+            loadTemplate()
+            userTest = rule.bool("allow_user_test")
+            target = rule.number("target") > 0 ? String(Int64(rule.number("target"))) : ""
+            limited = rule.bool("sending_limited")
+            sendingZone = rule.string("sending_timezone").isEmpty ? "Asia/Shanghai" : rule.string("sending_timezone")
+            if let value = rule["sending_weekly"] as? [[[String]]], value.count == 7 {
+                sendingWeekly = value.map { $0.map { $0.joined(separator: "-") }.joined(separator: ", ") }
+            }
+        }
+        .onChange(of: rule.string("mode")) { loadTemplate() }
+        .alert("开启自动回复", isPresented: $confirmEnable) {
+            Button("取消", role: .cancel) { }
+            Button("确认开启") { model.request("rule", ["target": String(enableTarget), "automatic": true, "confirmed_target": enableTarget]) }
+        } message: {
+            Text("账号：\(model.accountName)。对象：\(enableTitle)（ID \(enableTarget)）。\n\(enableSummary)\n发送结果不明时不重试，需要人工核对。")
+        }
+        .alert("确认发送测试消息", isPresented: $showTest) {
+            Button("取消", role: .cancel) { }
+            Button("向此对象发送一次") { model.request("send_test", ["text": confirmedTestText, "confirmed_target": testTarget]) { result in if result != nil { model.info = "测试消息已发送，请在原会话核对；此结果不代表查岗登记成功" } } }
+        } message: { Text("账号：\(model.accountName)。目标：\(testTitle)（ID \(testTarget)）。将发送：\n\(confirmedTestText)") }
+        .alert("合并旧发送账本", isPresented: $model.showLedger) {
+            Button("取消", role: .cancel) { }
+            Button("确认归属并合并") { model.importLegacyLedger() }
+        } message: {
+            Text("请确认文件属于当前账号 \(model.accountName)，目标为 \(rule.string("title"))（ID \(Int64(model.ledgerPreview.number("target")))）。将合并 \(Int(model.ledgerPreview.number("count"))) 条编号记录；已有记录保留，发送中记录转为待核对，不补发历史提示，自动回复恢复仅提醒。")
+        }
+    }
+    func status(_ value: String) -> String {
+        ["sending": "发送中", "sent": "已发送，等待登记确认", "sent_unverified": "已发送，登记未核实", "confirmed": "登记已确认", "send_unknown": "发送结果待核对", "expired": "已过期"][value] ?? value
+    }
+    func reference(_ value: String) -> String { value.hasPrefix("message:") ? "消息 \(value.dropFirst(8))" : "编号 \(value)" }
+    func loadTemplate(_ saved: Object? = nil) {
+        let values = saved ?? rule
+        replyMode = values.string("mode").isEmpty ? "keyword" : values.string("mode")
+        matchMode = values.string("match_mode").isEmpty ? "exact" : values.string("match_mode")
+        matchText = values.string("match_text")
+        fixedReply = values.string("reply_text").isEmpty ? "1" : values.string("reply_text")
+        validMinutes = values.number("valid_minutes") > 0 ? Int(values.number("valid_minutes")) : 5
+    }
+}
+
+struct ActivityRows: View {
+    let rows: [Object]
+    var body: some View {
+        if rows.isEmpty { Text("暂无活动").foregroundStyle(.secondary) }
+        ForEach(rows, id: \.activityID) { row in
+            HStack(alignment: .top) {
+                Image(systemName: row.string("kind") == "attention" ? "exclamationmark.circle" : "circle.fill")
+                    .font(.caption2).foregroundStyle(row.string("kind") == "attention" ? Color.orange : .secondary)
+                Text(row.string("detail")).frame(maxWidth: .infinity, alignment: .leading)
+                Text(dateText(row.number("date"))).font(.caption).foregroundStyle(.secondary)
+            }.padding(.vertical, 5)
+        }
+    }
+}
+
+struct ActivityView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var onlyAttention = false
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                PageTitle(title: "活动记录", subtitle: "查看功能执行与异常。活动记录不保存消息正文或查岗关键词。")
+                Toggle("仅显示需要关注的事项", isOn: $onlyAttention)
+                Panel(title: "最近 200 条活动", icon: "clock.arrow.circlepath") {
+                    ActivityRows(rows: onlyAttention ? model.activities.filter { $0.string("kind") == "attention" } : model.activities)
+                }
+                Panel(title: "归档覆盖与缺口", icon: "calendar.badge.exclamationmark") {
+                    let ranges = model.state.rows("ranges")
+                    let pending = ranges.filter { ["gap", "pause"].contains($0.string("kind")) }.count
+                    Text("\(pending) 个中断范围待补齐 · \((model.state["syncing_chats"] as? [Int64] ?? []).count) 个会话正在同步。补齐仅覆盖平台当前可访问记录，不保证已删除消息完整。")
+                        .font(.caption).foregroundStyle(pending > 0 ? Color.orange : .secondary)
+                    if model.state.rows("ranges").isEmpty { Text("选择归档会话后会记录起点和中断情况").foregroundStyle(.secondary) }
+                    ForEach(model.state.rows("ranges"), id: \.activityID) { row in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(row.string("title")) · \(row.string("detail"))")
+                            Text("\(dateText(row.number("start"))) → \(row.number("end") > 0 ? dateText(row.number("end")) : "仍待恢复")").font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 5)
+                    }
+                }
+            }.padding(28)
+        }
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var weekly = Array(repeating: "", count: 7)
+    @ViewState private var zone = "Asia/Shanghai"
+    @ViewState private var days = 30
+    @ViewState private var quota = 1024
+    @ViewState private var unlimited = false
+    @ViewState private var eraseText = ""
+    @ViewState private var showErase = false
+    @ViewState private var showLogout = false
+    @ViewState private var eraseChat = "0"
+    @ViewState private var showEraseChat = false
+    @ViewState private var schedulePreview: [Object] = []
+    @ViewState private var previewedSchedule = false
+    let weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                PageTitle(title: "设置", subtitle: "管理账号、运行方式与本地数据。")
+                if !model.changedSystemZone.isEmpty {
+                    Panel(title: "系统时区已变化", icon: "globe") {
+                        Text("新的系统时区：\(model.changedSystemZone)。当前规则仍使用原时区。")
+                        HStack {
+                            Button("采用新时区") { model.request("follow_system_timezone", ["timezone": model.changedSystemZone]) { result in if result != nil { model.changedSystemZone = ""; loadSettings() } } }
+                            Button("保留原时区") { model.changedSystemZone = "" }
+                        }
+                        Text("采用后会调整在线、静音和发送时段，并将自动回复恢复仅提醒。").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Panel(title: "账号", icon: "person.crop.circle") {
+                    AccountAvatar(identity: model.identity, root: model.root, size: 48)
+                    Text("\(model.accountName) · ID \(String(Int64(model.state.number("account"))))")
+                    Text("各账号同时运行。当前页面的提醒、归档、规则、设备信息和备份只属于选中的账号。").font(.caption).foregroundStyle(.secondary)
+                    if !model.demo { Button("添加 Telegram 账号…") { model.addAccount() }.disabled(model.busy) }
+                    Text("会话保存在本地权限受限目录，未额外加密。请保护这台 Mac 的登录账户。").font(.caption).foregroundStyle(.secondary)
+                    Button("退出当前账号") { showLogout = true }.disabled(model.demo)
+                    if model.demo { Button("返回真实账号登录") { model.switchMode(false) } }
+                }
+                Panel(title: "运行方式", icon: "menubar.rectangle") {
+                    Toggle("登录 Mac 后启动", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLoginItem($0) }))
+                    Toggle("运行时阻止空闲睡眠", isOn: Binding(get: { model.preventSleep }, set: { model.setPreventSleep($0) }))
+                    Text("关闭窗口会保留菜单栏；⌘Q 会停止消息引擎。合盖、强制睡眠和断网仍会中断工作。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                DisclosureGroup("高级设置", isExpanded: $model.showAdvancedAPI) {
+                    APISettingsView().padding(.top, 12)
+                    DeviceProfileView().padding(.top, 12)
+                }
+                Panel(title: "在线状态策略 · 实验功能", icon: "clock") {
+                    Toggle("按时段请求在线状态", isOn: Binding(get: { model.settings.bool("online") }, set: { model.change("online", $0) }))
+                    Text("这项功能不能保证他人始终看到你在线。不会向收藏夹发送或删除消息。空白时段表示关闭。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("IANA 时区，例如 Asia/Shanghai", text: $zone).textFieldStyle(.roundedBorder)
+                    ForEach(0..<7, id: \.self) { day in
+                            HStack { Text(weekdays[day]).frame(width: 48); TextField("09:00-18:00，多段用逗号分隔", text: $weekly[day]).textFieldStyle(.roundedBorder); Button("全天") { weekly[day] = "00:00-24:00" } }
+                    }
+                    HStack {
+                        Button("预览未来七天") {
+                            guard let values = parseWeekly(weekly) else { model.error = "时间段格式不正确"; return }
+                            model.request("schedule_preview", ["weekly": values, "timezone": zone]) { result in if let result { schedulePreview = result.rows("intervals"); previewedSchedule = true } }
+                        }
+                        Button("保存时间安排") { saveSchedule() }
+                    }
+                    Text("最近成功状态请求：\(dateText(model.state.number("online_last_success")))。这不代表所有联系人实际看到在线。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("跨午夜时段归属于开始当天，例如周五 23:00-07:00 会延续到周六早晨。").font(.caption).foregroundStyle(.secondary)
+                    if previewedSchedule { Text(schedulePreview.isEmpty ? "预览：没有启用时段" : "以下为预览，尚未保存").font(.caption).foregroundStyle(.secondary) }
+                    ForEach(Array((previewedSchedule ? schedulePreview : model.state.rows("schedule")).enumerated()), id: \.offset) { item in
+                        Text("\(dateText(item.element.number("start"))) → \(dateText(item.element.number("end")))").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Panel(title: "本地数据", icon: "internaldrive") {
+                    Toggle("归档图片（单张最大 10 MB）", isOn: Binding(get: { model.settings.bool("images") }, set: { model.change("images", $0) }))
+                    Toggle("不设归档容量上限", isOn: $unlimited)
+                    HStack {
+                        Stepper("保留 \(days) 天", value: $days, in: 1...365).frame(maxWidth: 250)
+                        TextField("容量上限 MB", value: $quota, format: .number).textFieldStyle(.roundedBorder).frame(width: 160).disabled(unlimited)
+                        Button("保存数据策略") { model.request("settings", ["retention_days": days, "quota_mb": unlimited ? 0 : quota]) }
+                    }
+                    Text("已用 \(ByteCountFormatter.string(fromByteCount: Int64(model.state.number("usage")), countStyle: .file))。" + (model.settings.number("quota_mb") > 0 ? "容量上限 \(Int(model.settings.number("quota_mb"))) MB，达到上限暂停归档。" : "未设容量上限，仍会检查磁盘空间。"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("发送编号与状态长期保留以防重复。消息和关键词按保留期清理；删除聊天记录不会删除发送账本。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button("清理过期记录") { model.request("prune") }
+                        Button("打开数据目录") { NSWorkspace.shared.open(model.root) }
+                        Button("预览诊断报告") { model.diagnosticPreview() }
+                    }
+                    HStack {
+                        Button("备份本地数据与配置") { model.backupData() }
+                        Button("预览并恢复备份") { model.chooseBackup() }
+                    }.disabled(model.busy)
+                    Text("备份未加密，包含当前账号的归档、图片、设置和发送账本，不包含登录会话或 API 凭据。恢复会合并已有记录，保留去重账本，并关闭自动回复和在线策略。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Divider()
+                    HStack {
+                        Picker("清理会话", selection: $eraseChat) {
+                            Text("选择会话").tag("0")
+                            ForEach(model.conversations, id: \.chatID) { row in Text(row.string("title")).tag(String(row.chatID)) }
+                        }
+                        Button("删除该会话归档", role: .destructive) { eraseText = ""; showEraseChat = true }.disabled(eraseChat == "0")
+                    }
+                    Button("删除当前账号的全部本地数据", role: .destructive) { eraseText = ""; showErase = true }
+                }
+                Text("通讯助手 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发构建") · 内部使用版 · Apple Silicon · 数据仅保存在本机")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.padding(28)
+        }
+        .onAppear { loadSettings() }
+        .onChange(of: model.configurationRevision) { _, _ in loadSettings(); schedulePreview = []; previewedSchedule = false }
+        .alert("退出 Telegram 账号", isPresented: $showLogout) {
+            Button("取消", role: .cancel) { }
+            Button("退出账号", role: .destructive) { model.logout() }
+        } message: { Text("仅停止当前账号并尝试撤销它的远端会话，已有归档保留，其他账号继续运行。若撤销未确认，请在 Telegram 设备管理中核对。") }
+        .alert("恢复当前账号的备份", isPresented: $model.showRestore) {
+            Button("取消", role: .cancel) { }
+            Button("确认合并并恢复") { model.restoreBackup() }
+        } message: {
+            Text("当前账号：\(model.accountName)。备份包含 \(Int(model.restorePreview.object("counts").number("messages"))) 条消息、\(Int(model.restorePreview.object("counts").number("executions"))) 条发送记录。合并归档与账本，保留现有消息版本；按备份恢复配置，自动回复与在线策略关闭。")
+        }
+        .alert("删除全部本地数据", isPresented: $showErase) {
+            TextField("请输入：删除全部", text: $eraseText)
+            Button("取消", role: .cancel) { }
+            Button("删除全部", role: .destructive) { model.request("erase_account", ["confirm": eraseText]) }
+        } message: { Text("包括聊天记录、规则和防重复账本，并退出账号。清除账本后，重新开启规则会失去历史编号的去重保护。") }
+        .alert("删除会话归档", isPresented: $showEraseChat) {
+            TextField("请输入：删除", text: $eraseText)
+            Button("取消", role: .cancel) { }
+            Button("删除", role: .destructive) { model.request("erase_chat", ["chat": Int64(eraseChat) ?? 0, "confirm": eraseText]); model.search() }
+        } message: { Text("停止该会话归档并删除已有本地内容。发送账本继续保留。") }
+    }
+    func loadSettings() {
+        days = Int(model.settings.number("retention_days")); quota = Int(model.settings.number("quota_mb"))
+        unlimited = quota == 0; if unlimited { quota = 1024 }
+        zone = model.settings.string("timezone")
+        if let value = model.settings["weekly"] as? [[[String]]], value.count == 7 {
+            weekly = value.map { $0.map { $0.joined(separator: "-") }.joined(separator: ", ") }
+        }
+    }
+    func saveSchedule() {
+        guard let result = parseWeekly(weekly) else { model.error = "时间段应使用 09:00-18:00 格式"; return }
+        model.request("settings", ["weekly": result, "timezone": zone])
+    }
+}
+
+func parseWeekly(_ value: [String]) -> [[[String]]]? {
+    var result: [[[String]]] = []
+    for day in value {
+        if day.trimmingCharacters(in: .whitespaces).isEmpty { result.append([]); continue }
+        let pairs = day.replacingOccurrences(of: "，", with: ",").split(separator: ",").map {
+            $0.split(separator: "-").map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+        guard pairs.allSatisfy({ $0.count == 2 }) else { return nil }
+        result.append(pairs)
+    }
+    return result
+}
+
+struct QuietHoursView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var enabled = false
+    @ViewState private var zone = "Asia/Shanghai"
+    @ViewState private var weekly = Array(repeating: "", count: 7)
+    var body: some View {
+        Panel(title: "定时静音", icon: "moon.zzz") {
+            Toggle("按时段静音通知和语音", isOn: $enabled)
+            if enabled {
+                TextField("静音时区", text: $zone).textFieldStyle(.roundedBorder)
+                ForEach(0..<7, id: \.self) { day in
+                    HStack {
+                        Text(["周一", "周二", "周三", "周四", "周五", "周六", "周日"][day]).frame(width: 48)
+                        TextField("例如 12:00-13:00,22:00-07:00", text: $weekly[day]).textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
+            Button("保存静音时段") {
+                guard let hours = parseWeekly(weekly) else { model.error = "时间段应使用 12:00-13:00 格式"; return }
+                model.request("settings", ["quiet_enabled": enabled, "quiet_timezone": zone, "quiet_weekly": hours])
+            }
+            Text(model.state.bool("quiet_active") ? "当前处于静音时段。归档与已授权自动回复继续运行。" : "当前不在静音时段。空白时段不静音；支持跨午夜。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.onAppear {
+            enabled = model.settings.bool("quiet_enabled"); zone = model.settings.string("quiet_timezone")
+            if let values = model.settings["quiet_weekly"] as? [[[String]]], values.count == 7 {
+                weekly = values.map { $0.map { $0.joined(separator: "-") }.joined(separator: ",") }
+            }
+        }
+    }
+}
+
+struct DeviceProfileView: View {
+    @EnvironmentObject var model: AppModel
+    @ViewState private var device = ""
+    @ViewState private var system = ""
+    @ViewState private var version = ""
+    @ViewState private var apply = false
+    var values: Object { ["device_model": device, "system_version": system, "app_version": version] }
+    var editingLogin: Bool { ["connecting", "phone", "code", "password", "identity", "logging_out"].contains(model.state.string("auth")) }
+    var body: some View {
+        Panel(title: "Telegram 设备信息", icon: "desktopcomputer") {
+            TextField("设备名称", text: $device).textFieldStyle(.roundedBorder).accessibilityLabel("设备名称")
+            TextField("系统版本", text: $system).textFieldStyle(.roundedBorder).accessibilityLabel("系统版本")
+            TextField("客户端显示版本", text: $version).textFieldStyle(.roundedBorder).accessibilityLabel("客户端显示版本")
+            Text("留空恢复默认值。每项最多 128 个字符；实际软件版本仍显示在关于信息中。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("保存设备信息") { model.request("device_profile", values) { result in if result != nil { model.info = "设备信息已保存，下次连接时生效"; load() } } }
+                Button("立即应用并重新连接") { apply = true }.disabled(!model.state.bool("connected"))
+            }.disabled(model.demo || model.busy || editingLogin)
+            let current = model.state.object("active_profile")
+            if !current.isEmpty { Text("当前连接：\(current.string("device_model")) · \(current.string("system_version")) · \(current.string("app_version"))").font(.caption) }
+            Button("核对 Telegram 当前会话显示") { model.request("refresh_device_info") }.disabled(model.demo || !model.state.bool("connected") || model.busy)
+            let server = model.state.object("server_profile")
+            if !server.isEmpty { Text("Telegram 返回：\(server.string("device_model")) · \(server.string("system_version")) · \(server.string("app_name")) \(server.string("app_version")) · \(server.string("country")) \(server.string("region"))").font(.caption) }
+            Text("设备列表中的应用名称由 API 标识决定，国家/地区由网络出口 IP 决定，这两项由 Telegram 返回。")
+                .font(.caption).foregroundStyle(.secondary)
+            if model.effectiveAPI?.isTestOnly == true { Text("当前为官方 TEST ONLY 配置，不能以此作为正式公开发布配置。").font(.caption).foregroundStyle(.orange) }
+        }
+        .onAppear { load() }
+        .alert("应用设备信息", isPresented: $apply) {
+            Button("取消", role: .cancel) { }
+            Button("保存并重新连接") { model.request("apply_device_profile", values) }
+        } message: { Text("重新连接后需要核对账号并重新开启自动回复。现有归档与去重账本保留，不撤销当前登录会话。") }
+    }
+    func load() {
+        let profile = model.state.object("device_profile")
+        device = profile.string("device_model"); system = profile.string("system_version"); version = profile.string("app_version")
+    }
+}
+
+struct DiagnosticsView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("诊断报告预览").font(.title2)
+            Text("仅包含版本、连接状态与数量统计。不包含账号身份、凭据、正文或关键词。").foregroundStyle(.secondary)
+            ScrollView { Text(model.diagnostics).font(.body.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+            HStack { Button("关闭") { model.showDiagnostics = false }; Spacer(); Button("保存报告") { model.exportDiagnostics() } }
+        }.padding(24).frame(width: 640, height: 480)
+    }
+}
+
+struct MenuView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.openWindow) var openWindow
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AccountMenu()
+            if model.accounts.count > 1 { Text("其他已登录账号也在后台运行").font(.caption).foregroundStyle(.secondary) }
+            if model.ready {
+                Text("最近同步：\(dateText(model.state.number("last_sync")))").font(.caption).foregroundStyle(.secondary)
+                Text(model.settings.object("rule").bool("automatic") ? "固定模板自动回复已开启" : "自动回复：仅提醒").font(.caption)
+                let count = model.executions.filter { $0.string("status") == "send_unknown" }.count
+                if count > 0 { Label("\(count) 条发送待核对", systemImage: "exclamationmark.circle").foregroundStyle(.orange) }
+            }
+            Divider()
+            Button("打开通讯助手") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+            if model.demo { Button("返回真实账号登录") { model.switchMode(false) } }
+            if model.ready {
+                Button("暂停提醒 30 分钟") { model.control("pause_reminders") }
+                Button(model.settings.bool("pause_sends") ? "恢复新发送" : "暂停新发送") { model.control(model.settings.bool("pause_sends") ? "resume_sends" : "pause_sends") }
+                Button(model.settings.bool("pause_all") ? "恢复当前账号" : "暂停当前账号") { model.control(model.settings.bool("pause_all") ? "resume_all" : "pause_all") }
+            }
+            Divider()
+            Button("退出通讯助手") { NSApp.terminate(nil) }.keyboardShortcut("q")
+        }.padding(18).frame(width: 310)
+    }
+}

@@ -1,0 +1,23 @@
+.env
+.env.*
+!.env.example
+macos/Private/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+chatlog/
+data/
+output/
+macos/build/
+*.session*
+*.sqlite*
+*.db
+*.tgabackup
+*.log
+*token*.txt
+TelegramAPI.json
+.local-source-import/
+# 本机个人验收记录；仓库使用 design/acceptance.md 的脱敏说明。
+macos/ACCEPTANCE.md

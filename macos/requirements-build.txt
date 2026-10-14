@@ -1,0 +1,10 @@
+Telethon==1.45.0
+PyInstaller==6.20.0
+pyinstaller-hooks-contrib==2026.8
+altgraph==0.17.5
+macholib==1.16.4
+packaging==26.3
+pyaes==1.6.1
+pyasn1==0.6.4
+rsa==4.9.1
+setuptools==84.0.0

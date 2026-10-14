@@ -1,0 +1,16 @@
+name: 功能建议
+description: 描述使用场景与可验证结果
+title: "[功能] "
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 当前需要完成的任务
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: 期望结果和验收方式
+    validations:
+      required: true

@@ -1,0 +1,58 @@
+import AppKit
+import Foundation
+
+@main
+struct AccountsProbe {
+    @MainActor static func main() {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let model = AppModel()
+        let second = "11111111-1111-4111-8111-111111111111"
+        let accountRows: [Object] = [
+            ["slot": "legacy", "account": 101, "identity": ["name": "第一账号"], "auth": "ready", "connected": true],
+            ["slot": second, "account": 202, "identity": ["name": "第二账号"], "auth": "ready", "connected": true]]
+        func state(_ slot: String, active: String = "legacy") -> Object {
+            ["event": "state", "slot": slot, "data": ["slot": slot, "active_slot": active, "accounts": accountRows,
+              "account": slot == "legacy" ? 101 : 202, "identity": ["name": slot == "legacy" ? "第一账号" : "第二账号"],
+              "auth": "ready", "connected": true, "settings": ["reminders": true]]]
+        }
+        func check(_ condition: Bool, _ text: String) {
+            guard condition else { print("FAIL: " + text); exit(1) }
+        }
+        model.receive(state("legacy"))
+        model.receive(state(second))
+        check(model.accountName == "第一账号", "后台账号不能覆盖当前页面")
+        check(model.accounts.count == 2, "账号列表应包含全部账号")
+        check(model.root == model.storageRoot, "旧账号目录保持原路径")
+        model.deliverReminder(["account": 202, "chat": 42, "message_id": 7, "title": "机器人", "count": 1, "body": "样例", "notify": true], slot: second)
+        check(model.probeNotices.count == 1, "后台账号仍应提交系统通知")
+        check(model.probeNotices[0].object("userInfo").string("slot") == second, "通知必须保留来源账号目录")
+        check(model.probeNotices[0].object("userInfo").string("account") == "202", "通知必须保留来源身份")
+        check(model.probeNotices[0].string("title").contains("第二账号"), "通知标题区分账号")
+        model.deliverReminder(["account": 101, "notify": true], slot: second)
+        check(model.probeNotices.count == 1, "错配身份通知必须拒绝")
+        model.results = [["text": "第一账号私密内容"]]; model.preview = ["keyword": "样例"]
+        model.restorePath = "/tmp/first-account.zip"; model.phone = "synthetic"; model.password = "synthetic"
+        model.receive(state(second, active: second))
+        check(model.selectedSlot == second && model.accountName == "第二账号", "切换账号显示正确身份")
+        check(model.results.isEmpty && model.preview.isEmpty && model.restorePath.isEmpty, "切换账号清空查询、预览和待恢复文件")
+        check(model.phone.isEmpty && model.password.isEmpty, "切换账号不保留登录输入")
+        check(model.root.path.hasSuffix("accounts/" + second), "新增账号使用独立目录")
+        check(model.preferenceKey("apiID") == "apiID." + second, "自定义 API 设置按账号隔离")
+        let identity = model.selectedSlot
+        model.selectLocalSlot("../../other")
+        check(model.selectedSlot == identity, "非法账号目录不能选中")
+        model.openNotification(["account": "101", "chat": "42", "message_id": "7"])
+        check(model.error.contains("其他账号"), "禁止在错误账号打开消息")
+        model.receive(state("legacy", active: "legacy"))
+        var completed = false
+        model.request("search") { _ in completed = true }
+        let request = model.probeRequests.last!
+        check(request.string("slot") == "legacy", "每个业务请求必须固定来源账号")
+        model.receive(state(second, active: second))
+        model.receive(["id": request.string("id"), "slot": "legacy", "result": ["messages": [["text": "私密"]]]])
+        check(!completed, "迟到的旧账号查询不能覆盖新账号")
+        check(accountStatus(["connected": true, "error_present": true]).contains("需检查"), "后台账号异常应在账号菜单中提示")
+        print("Native multi-account state: 18 checks passed")
+        exit(0)
+    }
+}
