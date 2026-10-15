@@ -8,7 +8,9 @@
 
 ## 安装与使用
 
-从 Releases 下载 Apple Silicon 的 DMG，打开后把“通讯助手”拖入“应用程序”。普通使用不需要 Python、Docker 或终端。安装包目前为内部测试、临时签名，尚未 Developer ID 签名及公证；干净 macOS 14 尚未验收。
+推荐从 Releases 下载 Apple Silicon 的 **PKG 安装向导**，双击后按“继续 → 安装”完成安装，再从“应用程序”打开“通讯助手”。系统可能要求管理员验证。安装器只替换应用，保留原有账号、归档、规则与账本；升级前请退出正在运行的应用。DMG/ZIP 保留为备用。
+
+普通使用不需要 Python、Docker 或终端。当前仍为测试版：PKG 未签名、未公证，应用临时签名，内置官方 TEST ONLY API；正式 API、签名公证及干净 Mac 安装验收完成前，暂不面向普通用户正式推广。仅使用测试 API 不能作为正式发行方案。
 
 1. 登录 Telegram 并确认本人身份。内部包使用此前已授权的官方 TEST ONLY 配置；正式产品 API 尚未申请成功。源码不包含 API 配置。
 2. 测试系统通知，按需开启来源语音、正文预览和静音时段。
@@ -17,6 +19,8 @@
 5. 左下角切换或添加账号，其他已登录账号独立运行。关窗仍运行，退出停止全部账号。
 
 [详细使用说明](macos/README.md) · [产品设计](design/product-design.md) · [架构说明](design/architecture.md) · [验收范围](design/acceptance.md) · [后续计划](ROADMAP.md)
+
+[公开推广前产品评估与优先级](design/public-release-review.md) 区分已实现能力、发行阻塞与后续体验改进。
 
 ## 功能与边界
 
@@ -57,7 +61,7 @@ python3 macos/scripts/smoke.py output/release-preview/通讯助手.app/Contents/
 
 `bash scripts/test.sh` 执行引擎、参考解析器及仓库边界检查；`bash scripts/test-native.sh` 运行独立原生状态探针。自动测试使用临时目录和模拟/演示数据，不登录真实 Telegram，不发送真实消息。
 
-GitHub Actions 在提交/PR 时跑回归、源码边界、展示页检查及 Apple Silicon 开发包构建。发布工作流手动触发，要求 main 的对应版本标签；可连接包需维护者单独配置仓库 Secret，源码库不会自动上传本机 API 配置。当前内部 Release 来自本地验证后的包，详见 [RELEASING.md](RELEASING.md)。
+GitHub Actions 在提交/PR 时跑回归、源码边界、展示页检查及 Apple Silicon 开发包构建，包括 PKG 载荷与安装范围验证。发布工作流手动触发，要求 main 的对应版本标签；可连接包需维护者单独配置仓库 Secret，源码库不会自动上传本机 API 配置。当前测试 Release 来自本地验证后的包，详见 [RELEASING.md](RELEASING.md)。
 
 ## 仓库内容与数据
 

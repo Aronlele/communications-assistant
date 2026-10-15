@@ -50,4 +50,6 @@ rm -rf "$INSTALLER/通讯助手.app"
 ditto "$APP" "$INSTALLER/通讯助手.app"
 if [ ! -L "$INSTALLER/Applications" ]; then ln -s /Applications "$INSTALLER/Applications"; fi
 hdiutil create -ov -volname "通讯助手" -srcfolder "$INSTALLER" -format UDZO "$OUTPUT_ROOT/通讯助手-$PRODUCT_VERSION-arm64.dmg"
+bash "$PROJECT_ROOT/macos/scripts/package_installer.sh" "$APP"
+python3 "$PROJECT_ROOT/macos/scripts/check_installer.py" "$OUTPUT_ROOT/CommunicationsAssistant-$PRODUCT_VERSION-macOS-arm64.pkg" "$APP"
 printf '%s\n' "$APP"

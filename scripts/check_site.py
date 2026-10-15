@@ -26,5 +26,6 @@ for ref in site.refs:
     path = (folder / ref.split('#')[0]).resolve()
     assert path.is_relative_to(folder.resolve()) and path.is_file(), f'展示页资源缺失：{ref}'
 assert '无需 GitHub 登录' in text and '演示' in text
+assert f'CommunicationsAssistant-{version}-macOS-arm64.pkg' in text and 'PKG 安装向导' in text, '首选下载需提供当前版本的安装向导'
 assert '仅仓库授权成员' not in text, '公开下载不应要求仓库授权'
 print('展示页版本、资源与公开下载说明检查通过')

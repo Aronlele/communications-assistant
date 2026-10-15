@@ -38,6 +38,7 @@ jobs:
         with:
           name: macos-arm64-development-no-api
           path: |
+            output/macos/*.pkg
             output/macos/*.dmg
             output/macos/*.zip
           retention-days: 7
