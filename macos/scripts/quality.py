@@ -4,7 +4,6 @@ import asyncio
 import json
 import math
 from pathlib import Path
-import socket
 import subprocess
 import tempfile
 import time
@@ -12,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from engine.service import Service
 from engine.store import Store
+from engine_probe import connect_engine
 
 
 def p95(values): return sorted(values)[math.ceil(len(values) * .95) - 1]
@@ -41,13 +41,8 @@ def startup_quality(executable):
             address = str(Path(folder) / 'e.sock'); begin = time.perf_counter()
             process = subprocess.Popen([executable, '--root', folder, '--socket', address, '--demo'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
-                with socket.socket(socket.AF_UNIX) as client:
+                with connect_engine(address, process) as client:
                     client.settimeout(5)
-                    while True:
-                        try: client.connect(address); break
-                        except (FileNotFoundError, ConnectionRefusedError):
-                            if process.poll() is not None or time.perf_counter() - begin > 10: raise RuntimeError('引擎启动失败')
-                            time.sleep(.01)
                     file = client.makefile('rwb'); state = json.loads(file.readline())
                     assert state['data']['auth'] == 'ready'
                     values.append(time.perf_counter() - begin)

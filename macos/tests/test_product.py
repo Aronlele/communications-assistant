@@ -221,6 +221,20 @@ class ProductServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['messages'][0]['text'], '只读消息')
         self.assertEqual(self.service.store.search(1)['count'], 0)
 
+    async def test_demo_missing_context_reports_unavailable_without_network(self):
+        self.service.demo = True
+        self.service.client.get_messages = AsyncMock()
+        with self.assertRaisesRegex(ValueError, '演示数据中没有这条原消息'):
+            await self.service.command('notification_context', {'chat': 42, 'id': 8})
+        self.service.client.get_messages.assert_not_awaited()
+
+    async def test_demo_context_uses_local_message_without_client(self):
+        self.service.demo = True; self.service.client = None
+        self.service.store.put_messages(1, 42, [{'id': 8, 'date': 1, 'sender': '演示', 'text': '本地样例'}])
+        result = await self.service.command('notification_context', {'chat': 42, 'id': 8})
+        self.assertEqual(result['source'], 'local')
+        self.assertEqual(result['messages'][0]['text'], '本地样例')
+
     async def test_voice_activity_does_not_include_body_or_other_account(self):
         await self.service.command('voice_result', {'result': 'completed', 'account': 2})
         self.assertEqual(self.service.store.activities(1), [])

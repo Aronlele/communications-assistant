@@ -417,6 +417,8 @@ class Service:
                 local = self.store.db.execute("SELECT * FROM messages WHERE account=? AND chat=? AND id=?", (self.account, chat, message_id)).fetchone()
                 if local:
                     return {"messages": [dict(local)], "source": "local"}
+                if self.demo:
+                    raise ValueError("演示数据中没有这条原消息；演示模式不会联网读取")
                 self.require_account(live=True)
                 message = await self.client.get_messages(self.entities.get(chat, chat), ids=message_id)
                 if not message or getattr(message, "ttl_period", None):

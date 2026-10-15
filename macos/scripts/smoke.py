@@ -2,11 +2,11 @@
 import argparse
 import json
 import os
-import socket
 import subprocess
 import tempfile
-import time
 from pathlib import Path
+
+from engine_probe import connect_engine
 
 
 def main():
@@ -19,13 +19,7 @@ def main():
         process = subprocess.Popen([args.executable, "--root", str(root), "--socket", address, "--demo"],
                                    env={"PATH": "/usr/bin:/bin"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            client = socket.socket(socket.AF_UNIX)
-            for _ in range(100):
-                try:
-                    client.connect(address)
-                    break
-                except (FileNotFoundError, ConnectionRefusedError):
-                    time.sleep(0.05)
+            client = connect_engine(address, process)
             client.settimeout(10)
             file = client.makefile("rwb")
             sequence = 0

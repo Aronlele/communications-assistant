@@ -281,3 +281,78 @@ class MultiTaskTests(unittest.IsolatedAsyncioTestCase):
         await self.service.command('task_delete', {'id': 'legacy', 'confirmed_id': 'legacy'})
         self.assertEqual(self.service.store.results(1, task_id='legacy')['count'], 60)
         self.assertEqual(self.service.store.results(1, task_id='task-two')['count'], 0)
+
+    async def test_edited_template_and_sample_survive_database_reopen(self):
+        self.seed()
+        template = '在线核对 {number}\n{name}，请在{minutes}分钟内回复\n{keyword}\n请保持在线'
+        sample = '在线核对 00177\n验收同事，请在20分钟内回复\n苹果\n请保持在线'
+        await self.service.command('task_save', {'id': 'task-two', 'prompt_template': template, 'sample_text': sample})
+        preview = await self.service.command('task_preview', {'id': 'task-two', 'text': sample})
+        self.assertEqual((preview['number'], preview['keyword']), ('00177', '苹果'))
+        self.service.store.close()
+        self.service = Service(self.folder.name, demo=True)
+        self.service.account = 1; self.service.auth = 'ready'
+        saved = task_rule(self.service.settings(), 'task-two')
+        self.assertEqual((saved['prompt_template'], saved['sample_text']), (template, sample))
+        changed = sample.replace('00177', '00178').replace('验收同事', '另一同事').replace('苹果', '梨子')
+        preview = await self.service.command('task_draft_preview', {'draft': saved, 'text': changed})
+        self.assertEqual((preview['number'], preview['keyword']), ('00178', '梨子'))
+        self.send.assert_not_awaited()
+
+    async def test_delete_other_task_preserves_queued_send_and_active_rule(self):
+        self.seed()
+        before = self.service.settings()['rule']
+        await self.runner.lock.acquire()
+        job = asyncio.create_task(self.runner.handle(event(42, SAMPLE)))
+        await asyncio.sleep(0)
+        await self.service.command('task_delete', {'id': 'task-two', 'confirmed_id': 'task-two'})
+        self.assertEqual(before, self.service.settings()['rule'])
+        self.runner.lock.release(); await job
+        self.send.assert_awaited_once_with(42, '香蕉')
+
+    async def test_recover_selected_only_keeps_closed_task_and_rejects_old_prompt(self):
+        from engine.tasks import revision
+        from telethon import types
+        self.seed()
+        cfg = self.service.settings()
+        cfg['tasks'].append(dict(cfg['tasks'][0], id='closed-task', target=44, automatic=False))
+        self.service.store.save_settings(1, cfg)
+        self.service.prepare_recovery()
+        cfg = self.service.settings()
+        self.assertEqual(set(cfg['resume_tasks']), {'legacy', 'task-two'})
+        self.service.demo = False
+        self.service.client = SimpleNamespace(is_connected=lambda: True,
+            get_entity=AsyncMock(side_effect=lambda target: types.User(id=target, first_name='本地替身', bot=True)))
+        await self.service.command('task_resume', {'ids': ['legacy'], 'confirmed_account': 1,
+                                                 'revisions': {'legacy': revision(cfg['rule'])}})
+        cfg = self.service.settings()
+        self.assertTrue(cfg['rule']['automatic'])
+        self.assertFalse(task_rule(cfg, 'task-two')['automatic'])
+        self.assertFalse(task_rule(cfg, 'closed-task')['automatic'])
+        self.assertEqual(cfg['resume_tasks'], ['task-two'])
+        self.send.assert_not_awaited()
+        old = event(42, SAMPLE)
+        old.message.date = datetime.fromtimestamp(cfg['rule']['armed_at']-1, timezone.utc)
+        await self.runner.handle(old)
+        self.send.assert_not_awaited()
+        await self.runner.handle(event(43, SAMPLE, 2))
+        self.send.assert_not_awaited()
+        await self.runner.handle(event(42, SAMPLE.replace('00176', '00178'), 3))
+        self.send.assert_awaited_once_with(42, '香蕉')
+
+    async def test_recovery_target_failure_does_not_partially_enable_batch(self):
+        from engine.tasks import revision
+        from telethon import types
+        self.seed()
+        self.service.prepare_recovery()
+        cfg = self.service.settings()
+        self.service.demo = False
+        def resolve(target):
+            if target == 43: raise ValueError('本地模拟目标失效')
+            return types.User(id=target, first_name='本地替身', bot=True)
+        self.service.client = SimpleNamespace(is_connected=lambda: True, get_entity=AsyncMock(side_effect=resolve))
+        with self.assertRaises(ValueError):
+            await self.service.command('task_resume', {'ids': ['legacy', 'task-two'], 'confirmed_account': 1,
+                'revisions': {rule['id']: revision(rule) for rule in rules(cfg)}})
+        self.assertEqual(cfg, self.service.settings())
+        self.send.assert_not_awaited()

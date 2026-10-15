@@ -4,7 +4,7 @@
 
 原生 macOS Telegram 通讯工作台：多账号同时连接、消息提醒、本地聊天归档，以及用户明确配置的自动回复。
 
-当前版本 **0.4.0 测试版（构建 13）**，新增多任务、任务结果、所有账号和准备与恢复向导。**72 小时验收：观察中，尚未通过**；本轮预计 2026-10-18 12:06（北京时间）结束，旧版中断观察不合并计时。公开仓库：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。安装包：[0.4.0 测试版下载](https://github.com/Aronlele/communications-assistant/releases/tag/v0.4.0)。产品展示页：[在线查看](https://aronlele.github.io/communications-assistant/)，源码位于 `docs/`；发布方式见 [发布说明](RELEASING.md)。仓库和安装包均可公开访问，无需 GitHub 登录。
+当前发布 **0.4.1 测试版（构建 14）**，修复隔离探测的连接等待及演示原消息提示，保留多任务、任务结果、所有账号和准备与恢复向导。**0.4.1 尚未开展独立 72 小时观察**；本机工作应用仍为 0.4.0 构建 13，原账号和自动回复继续运行，其观察预计 2026-10-18 12:06（北京时间）结束，不能作为 0.4.1 的通过证据。公开仓库：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。安装包：[0.4.1 测试版下载](https://github.com/Aronlele/communications-assistant/releases/tag/v0.4.1)。产品展示页：[在线查看](https://aronlele.github.io/communications-assistant/)，源码位于 `docs/`；发布方式见 [发布说明](RELEASING.md)。仓库和安装包均可公开访问，无需 GitHub 登录。
 
 ## 安装与使用
 
@@ -34,7 +34,7 @@
 
 重启或身份恢复后，需要分别确认账号，再在恢复向导核对并恢复选中的原已开启任务；不补发重启前的旧提示。睡眠、合盖、退出和断网期间不能实时执行。备份未加密，不含登录会话和 API 凭据。
 
-本轮已通过 195 项 Python 回归、42 项原生状态检查，以及本机升级、隔离界面、打包引擎和安装包检查。完整 72 小时、干净旧系统及下一次实际查岗结果分别验收，详见[验收记录](design/acceptance.md)。发布附件提供 PKG、DMG、ZIP、最新使用说明和 SHA256；包内帮助是构建时快照，最新说明以仓库及附件为准。
+本轮已通过 205 项 Python 回归、42 项原生状态检查，另验收延迟启动、隔离界面、打包引擎和安装包。工作账号未切换到 0.4.1，其真实升级与完整 72 小时仍待单独验收，详见[验收记录](design/acceptance.md)。发布附件提供 PKG、DMG、ZIP、中文使用说明和 SHA256。
 
 ## 从源码构建
 
