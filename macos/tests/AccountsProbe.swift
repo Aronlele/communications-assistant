@@ -52,7 +52,27 @@ struct AccountsProbe {
         model.receive(["id": request.string("id"), "slot": "legacy", "result": ["messages": [["text": "私密"]]]])
         check(!completed, "迟到的旧账号查询不能覆盖新账号")
         check(accountStatus(["connected": true, "error_present": true]).contains("需检查"), "后台账号异常应在账号菜单中提示")
-        print("Native multi-account state: 18 checks passed")
+        model.demo = false
+        check(!model.canRemoveAccount, "已连接账号不能直接移除")
+        let empty = "22222222-2222-4222-8222-222222222222"
+        model.receive(["event": "state", "data": ["slot": empty, "active_slot": empty,
+            "accounts": accountRows + [["slot": empty, "auth": "disconnected"]], "auth": "disconnected"]])
+        check(model.canRemoveAccount, "空登录入口可移除")
+        let before = model.probeRequests.count
+        model.removeAccount(second)
+        check(model.probeRequests.count == before, "确认后切换账号不得误删另一个入口")
+        model.removeAccount(empty)
+        let removal = model.probeRequests.last!
+        check(removal.string("method") == "remove_account" && removal.string("slot") == empty, "移除请求固定到确认的入口")
+        check(removal.object("args").string("confirm") == empty, "移除请求包含精确确认")
+        model.receive(state("legacy"))
+        model.receive(["id": removal.string("id"), "slot": empty, "result": ["removed_slot": empty]])
+        check(model.accounts.count == 2 && model.selectedSlot == "legacy", "移除后切回存留账号")
+        check(model.info.contains("已移除"), "切换后仍显示移除完成提示")
+        model.receive(["event": "state", "data": ["slot": "legacy", "active_slot": "legacy",
+            "accounts": [["slot": "legacy", "auth": "disconnected"]], "auth": "disconnected"]])
+        check(!model.canRemoveAccount, "至少保留一个登录入口")
+        print("Native multi-account state: 26 checks passed")
         exit(0)
     }
 }

@@ -10,12 +10,12 @@ bash scripts/test-native.sh
 TGA_RELEASE=1 TGA_OUTPUT_ROOT="$PWD/output/release-preview" bash macos/scripts/build.sh
 python3 macos/scripts/smoke.py output/release-preview/通讯助手.app/Contents/Resources/Engine/tgengine
 codesign --verify --deep --strict output/release-preview/通讯助手.app
-hdiutil verify output/release-preview/通讯助手-0.3.2-arm64.dmg
+hdiutil verify output/release-preview/通讯助手-0.3.3-arm64.dmg
 ```
 
 API 配置仅用于签名前生成资源，不加入 Git。发布说明须写明 TEST ONLY、临时签名、实际验证环境及待验收范围；正式产品 API 尚未就绪。
 
-提交 main，创建与包版本一致的 v0.3.2 标签，在公开 Release 上传 DMG、ZIP、SHA256SUMS 和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
+提交 main，创建与包版本一致的 v0.3.3 标签，在公开 Release 上传 DMG、ZIP、SHA256SUMS 和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
 
 ## GitHub 工作流
 

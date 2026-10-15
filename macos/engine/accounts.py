@@ -40,7 +40,7 @@ class AccountManager:
         path = self.root / 'accounts.json'
         registry = json.loads(path.read_text()) if path.exists() else {'slots': ['legacy'], 'active': 'legacy'}
         slots = registry.get('slots', [])
-        if not slots or slots[0] != 'legacy' or len(set(slots)) != len(slots):
+        if not slots or len(set(slots)) != len(slots):
             raise ValueError('账号目录损坏，请保留数据并恢复账号目录备份')
         if demo and len(slots) == 1:
             slots = slots + ['00000000-0000-4000-8000-000000000002']
@@ -48,7 +48,7 @@ class AccountManager:
             if slot != 'legacy' and (not isinstance(slot, str) or str(uuid.UUID(slot)) != slot):
                 raise ValueError('账号目录标识无效')
             self.add_service(slot)
-        self.active = registry.get('active', 'legacy')
+        self.active = registry.get('active', slots[0])
         if self.active not in self.services:
             raise ValueError('当前账号目录不存在')
 
@@ -96,6 +96,36 @@ class AccountManager:
             for service in self.services.values():
                 service.closing = True
             return {'ok': True}
+        if method == 'remove_account':
+            async with self.registry_lock:
+                if slot not in self.services:
+                    raise ValueError('账号不存在，操作未执行')
+                async with self.locks[slot]:
+                    service = self.services[slot]
+                    if self.demo or service.auth != 'disconnected' or service.client:
+                        raise ValueError('请先退出当前账号或取消登录，再移除账号')
+                    if args.get('confirm') != slot:
+                        raise ValueError('请确认要移除的账号')
+                    if len(self.services) == 1:
+                        raise ValueError('至少保留一个登录入口')
+                    previous, active = self.services.copy(), self.active
+                    del self.services[slot]
+                    if self.active == slot:
+                        self.active = next(iter(self.services))
+                    try:
+                        self.save_registry()
+                    except Exception:
+                        self.services, self.active = previous, active
+                        raise
+                    service.stop.set()
+                    task = self.maintenance.pop(slot, None)
+                    if task:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                    await service.close()
+                    # 只移除登录入口，保留归档、规则、账本和自定义配置。
+                    await self.services[self.active].publish()
+                    return {'removed_slot': slot}
         if method in ('add_account', 'select_account'):
             async with self.registry_lock:
                 if method == 'add_account':
@@ -119,6 +149,8 @@ class AccountManager:
             raise ValueError('账号不存在，操作未执行')
         service = self.services[slot]
         async with self.locks[slot]:
+            if slot not in self.services:
+                raise ValueError('账号已移除，操作未执行')
             if method == 'confirm_identity':
                 identity = service.identity.get('id')
                 if identity and any(identity in (other.account, other.identity.get('id'))

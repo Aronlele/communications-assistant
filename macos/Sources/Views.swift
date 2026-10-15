@@ -58,6 +58,8 @@ struct AccountAvatar: View {
 
 struct AccountMenu: View {
     @EnvironmentObject var model: AppModel
+    @ViewState private var showRemove = false
+    @ViewState private var removalSlot = ""
     var body: some View {
         HStack(spacing: 10) {
             AccountAvatar(identity: model.identity, root: model.root)
@@ -74,12 +76,24 @@ struct AccountMenu: View {
                     if !model.demo {
                         Divider()
                         Button("添加 Telegram 账号…", systemImage: "person.badge.plus") { model.addAccount() }
+                        Button("移除当前账号…", role: .destructive) {
+                            removalSlot = model.selectedSlot
+                            showRemove = true
+                        }.disabled(!model.canRemoveAccount)
+                        if model.state.string("auth") != "disconnected" { Text("移除前请先在设置中退出账号或取消登录") }
+                        else if model.accounts.count == 1 { Text("至少保留一个登录入口") }
                     }
                 } label: {
                     Text(model.accountName).font(.headline).lineLimit(1)
                 }.menuStyle(.borderlessButton).disabled(model.busy).accessibilityLabel("切换或添加账号：" + model.accountName)
                 Text(model.connection).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
+        }
+        .alert("移除当前账号", isPresented: $showRemove) {
+            Button("取消", role: .cancel) { }
+            Button("移除账号", role: .destructive) { model.removeAccount(removalSlot) }
+        } message: {
+            Text("仅从账号列表移除当前已退出的登录入口。本地归档、规则、发送账本和自定义配置保留，其他账号继续运行。重新添加账号不会自动合并旧归档，可通过原目录的本地备份恢复。")
         }
     }
 }

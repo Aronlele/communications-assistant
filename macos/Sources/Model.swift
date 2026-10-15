@@ -253,6 +253,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     var hasSavedAPI: Bool { !(UserDefaults.standard.string(forKey: preferenceKey("apiID")) ?? "").isEmpty }
     var effectiveAPI: TelegramAPIConfiguration? { apiSource.resolve(builtIn: builtInAPI, custom: customAPI) }
     var canChangeAPI: Bool { !demo && !busy && state.string("auth") == "disconnected" }
+    var canRemoveAccount: Bool { !demo && !busy && accounts.count > 1 && state.string("auth") == "disconnected" }
     var canUseMatchingBuiltInAPI: Bool { !demo && !busy && apiSource == .custom && builtInAPI != nil && customAPI == builtInAPI }
     var missingAPIMessage: String {
         apiSource == .builtIn ? "此版本尚未配置 Telegram 服务，暂时无法登录。可以先体验本地演示。" : "自定义 API 尚未配置或无法读取，请在高级设置中重新保存。"
@@ -381,7 +382,12 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             let slot = next.string("slot").isEmpty ? selectedSlot : next.string("slot")
             let previousSlotSettings = accountStates[slot]?.object("settings") ?? [:]
             accountStates[slot] = next
-            if next["accounts"] != nil { accounts = next.rows("accounts") }
+            if next["accounts"] != nil {
+                accounts = next.rows("accounts")
+                let slots = Set(accounts.map { $0.string("slot") })
+                accountStates = accountStates.filter { slots.contains($0.key) }
+                restoredSlots.formIntersection(slots)
+            }
             let activeSlot = next.string("active_slot")
             if !activeSlot.isEmpty && activeSlot != selectedSlot {
                 selectLocalSlot(activeSlot)
@@ -428,7 +434,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         let targetSlot = slot ?? selectedSlot
         if !background { activeRequests.insert(id) }
         if let completion { pending[id] = { [weak self] result in
-            guard self?.selectedSlot == targetSlot || ["select_account", "add_account"].contains(method) else { return }
+            guard self?.selectedSlot == targetSlot || ["select_account", "add_account", "remove_account"].contains(method) else { return }
             completion(result)
         } }
         busy = !activeRequests.isEmpty
@@ -480,6 +486,16 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         request("add_account") { [weak self] result in
             guard result != nil else { return }
             self?.selection = .overview
+        }
+    }
+
+    func removeAccount(_ slot: String) {
+        guard canRemoveAccount, slot == selectedSlot else { error = "账号状态已变化，请重新核对后移除"; return }
+        request("remove_account", ["confirm": slot], slot: slot) { [weak self] result in
+            guard result?.string("removed_slot") == slot else { return }
+            self?.cancelVoice(for: slot)
+            self?.selection = .overview
+            self?.info = "已移除账号登录入口，本地归档、规则和账本仍保留；其他账号继续运行"
         }
     }
 

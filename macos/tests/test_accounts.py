@@ -217,6 +217,80 @@ class AccountsTests(unittest.IsolatedAsyncioTestCase):
             await self.manager.command('unknown', 'control', {'action': 'pause_all'})
         self.assertFalse(self.second.settings()['pause_all'])
 
+    async def test_remove_empty_slot_preserves_other_accounts_and_local_data(self):
+        cfg = self.second.settings(); cfg['rule']['automatic'] = True
+        self.second.store.save_settings(202, cfg)
+        empty = (await self.manager.command(self.slot, 'add_account', {}))['slot']
+        folder = self.manager.services[empty].root
+        result = await self.manager.command(empty, 'remove_account', {'confirm': empty})
+        self.assertEqual(result['removed_slot'], empty)
+        self.assertEqual(set(self.manager.services), {'legacy', self.slot})
+        self.assertEqual(self.manager.active, 'legacy')
+        self.assertTrue(self.second.settings()['rule']['automatic'])
+        self.assertTrue(folder.joinpath('assistant.sqlite').is_file())
+        self.first.client.disconnect.assert_not_called()
+        self.second.client.disconnect.assert_not_called()
+        registry = json.loads((Path(self.folder.name) / 'accounts.json').read_text())
+        self.assertNotIn(empty, registry['slots'])
+
+    async def test_remove_logged_out_legacy_keeps_archive_and_survives_restart(self):
+        await self.manager.command('legacy', 'logout', {})
+        await self.manager.command('legacy', 'remove_account', {'confirm': 'legacy'})
+        self.assertEqual(self.manager.active, self.slot)
+        self.assertTrue(self.first.root.joinpath('assistant.sqlite').is_file())
+        await self.manager.close()
+        self.manager = AccountManager(self.folder.name)
+        self.assertEqual(list(self.manager.services), [self.slot])
+        self.assertEqual(self.manager.active, self.slot)
+
+    async def test_remove_requires_logout_and_exact_confirmation(self):
+        for auth in ('ready', 'offline', 'identity', 'phone', 'connecting'):
+            self.second.auth = auth
+            with self.assertRaisesRegex(ValueError, '退出'):
+                await self.manager.command(self.slot, 'remove_account', {'confirm': self.slot})
+        self.second.auth = 'ready'
+        await self.manager.command(self.slot, 'logout', {})
+        with self.assertRaisesRegex(ValueError, '确认'):
+            await self.manager.command(self.slot, 'remove_account', {'confirm': 'legacy'})
+        self.assertIn(self.slot, self.manager.services)
+
+    async def test_last_login_entry_cannot_be_removed(self):
+        await self.manager.command(self.slot, 'logout', {})
+        await self.manager.command(self.slot, 'remove_account', {'confirm': self.slot})
+        await self.manager.command('legacy', 'logout', {})
+        with self.assertRaisesRegex(ValueError, '一个登录入口'):
+            await self.manager.command('legacy', 'remove_account', {'confirm': 'legacy'})
+
+    async def test_failed_registry_write_does_not_remove_account(self):
+        await self.manager.command(self.slot, 'logout', {})
+        before = list(self.manager.services)
+        with patch.object(self.manager, 'save_registry', side_effect=OSError('synthetic full disk')):
+            with self.assertRaises(OSError):
+                await self.manager.command(self.slot, 'remove_account', {'confirm': self.slot})
+        self.assertEqual(list(self.manager.services), before)
+        self.assertEqual(self.manager.active, self.slot)
+        self.assertEqual(self.second.store.db.execute('SELECT COUNT(*) FROM accounts').fetchone()[0], 1)
+
+    async def test_remove_background_slot_keeps_selected_account(self):
+        await self.manager.command(self.slot, 'logout', {})
+        await self.manager.command('legacy', 'select_account', {'slot': 'legacy'})
+        await self.manager.command(self.slot, 'remove_account', {'confirm': self.slot})
+        self.assertEqual(self.manager.active, 'legacy')
+        self.assertTrue(self.first.state()['connected'])
+
+    async def test_queued_command_cannot_access_removed_store(self):
+        await self.manager.command(self.slot, 'logout', {})
+        lock = self.manager.locks[self.slot]
+        await lock.acquire()
+        remove = asyncio.create_task(self.manager.command(self.slot, 'remove_account', {'confirm': self.slot}))
+        await asyncio.sleep(0)
+        queued = asyncio.create_task(self.manager.command(self.slot, 'state', {}))
+        await asyncio.sleep(0)
+        lock.release()
+        await remove
+        with self.assertRaisesRegex(ValueError, '已移除'):
+            await queued
+
     async def test_runtime_diagnostics_omit_identity_and_messages(self):
         self.manager.write_runtime_status()
         data = json.loads((Path(self.folder.name) / 'runtime-status.json').read_text())
