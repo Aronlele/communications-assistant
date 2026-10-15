@@ -4,7 +4,7 @@
 
 原生 macOS Telegram 通讯工作台：多账号同时连接、消息提醒、本地聊天归档，以及用户明确配置的自动回复。
 
-当前源码版本 **0.3.2（构建 11）**。私有仓库：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。安装包：[内部测试 Releases](https://github.com/Aronlele/communications-assistant/releases)。展示页位于 `docs/`；仓库私有不代表 GitHub Pages 网站也私有，部署前见 [发布说明](RELEASING.md)。
+当前源码版本 **0.3.2（构建 11）**。公开仓库：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。安装包：[测试版 Releases](https://github.com/Aronlele/communications-assistant/releases)。产品展示页：[在线查看](https://aronlele.github.io/communications-assistant/)，源码位于 `docs/`；发布方式见 [发布说明](RELEASING.md)。仓库和安装包均可公开访问，无需 GitHub 登录。
 
 ## 安装与使用
 

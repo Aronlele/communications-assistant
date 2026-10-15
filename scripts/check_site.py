@@ -25,5 +25,6 @@ for ref in site.refs:
     if ref.startswith(('https://', 'mailto:', '#', 'data:')): continue
     path = (folder / ref.split('#')[0]).resolve()
     assert path.is_relative_to(folder.resolve()) and path.is_file(), f'展示页资源缺失：{ref}'
-assert '仅仓库授权成员' in text and '演示' in text
-print('展示页版本、资源与私有下载说明检查通过')
+assert '无需 GitHub 登录' in text and '演示' in text
+assert '仅仓库授权成员' not in text, '公开下载不应要求仓库授权'
+print('展示页版本、资源与公开下载说明检查通过')
