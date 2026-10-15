@@ -21,7 +21,8 @@ extension Dictionary where Key == String, Value == Any {
 
 enum Destination: String, CaseIterable, Identifiable {
     case overview = "概览", reminders = "消息提醒", archive = "聊天归档"
-    case automation = "自动化", activity = "活动记录", settings = "设置"
+    case automation = "任务管理", results = "任务结果", accounts = "所有账号", setup = "准备与恢复"
+    case activity = "活动记录", settings = "设置"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -29,6 +30,9 @@ enum Destination: String, CaseIterable, Identifiable {
         case .reminders: return "bell"
         case .archive: return "archivebox"
         case .automation: return "bolt"
+        case .results: return "checklist"
+        case .accounts: return "person.2"
+        case .setup: return "list.bullet.clipboard"
         case .activity: return "clock.arrow.circlepath"
         case .settings: return "gearshape"
         }
@@ -261,6 +265,12 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     var conversations: [Object] { state.rows("conversations") }
     var activities: [Object] { state.rows("activities") }
     var executions: [Object] { state.rows("executions") }
+    var taskRules: [Object] { state.rows("tasks") }
+    var enabledTaskCount: Int { taskRules.filter { $0.bool("automatic") }.count }
+    var pendingRecovery: [Object] { taskRules.filter { $0.bool("resume_pending") } }
+    var accountAttentionCount: Int {
+        accounts.filter { $0.bool("error_present") || $0.bool("quota_paused") || $0.number("attention_count") > 0 || $0.number("resume_count") > 0 || $0.string("auth") == "identity" || ($0.number("account") > 0 && !$0.bool("connected")) }.count
+    }
     var identity: Object { state.object("identity") }
     var accountName: String { identity.string("name").isEmpty ? "尚未登录" : identity.string("name") }
     var connection: String {
@@ -409,7 +419,10 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
                 showContext = false; showDiagnostics = false; showExport = false
                 searchChat = "0"; query = ""; sender = ""; dateFilter = false
             }
+            let previousAuth = state.string("auth")
             state = next
+            if previousAuth != "ready", next.string("auth") == "ready",
+               !settings.bool("setup_completed") || !pendingRecovery.isEmpty { selection = .setup }
             if error == "消息引擎意外退出，正在恢复；自动回复需重新启用。",
                ["ready", "identity", "phone", "offline", "disconnected"].contains(next.string("auth")) {
                 error = ""
@@ -587,6 +600,16 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             components.host = "user"; components.queryItems = [URLQueryItem(name: "id", value: String(chat))]
         } else { info = "此会话没有可验证的公开跳转链接，请在 Telegram 原客户端选择对应账号查看"; return }
         if let url = components.url, !NSWorkspace.shared.open(url) { error = "未找到可以打开此会话的 Telegram 客户端" }
+    }
+    func showTaskMessage(_ row: Object) {
+        contextGeneration += 1
+        let generation = contextGeneration
+        request("notification_context", ["chat": Int64(row.number("target")), "id": Int64(row.number("message_id"))]) { [weak self] result in
+            guard let self, let result, generation == contextGeneration else { return }
+            context = result.rows("messages")
+            contextNote = result.string("source") == "remote" ? "只读查看任务来源；未归档内容不会保存到本机。" : "任务对应的本地归档。"
+            showContext = true
+        }
     }
     func openMedia(_ message: Object) {
         let relative = message.string("media")

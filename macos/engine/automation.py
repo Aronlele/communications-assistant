@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from auto_checkin import _confirmation_number
 from engine.reply_rule import parse_reply
 from engine.schedule import active
+from engine.tasks import rules, revision
 
 
 class Automation:
@@ -16,10 +17,9 @@ class Automation:
 
     async def handle(self, event, now=None):
         config = self.settings()
-        rule = config["rule"]
-        target = int(rule["target"])
         message = event.message
-        if not target or not event.is_private or event.sender_id != target or event.chat_id != target:
+        target = event.sender_id
+        if not target or not event.is_private or event.chat_id != target:
             return
         if message.out or message.fwd_from is not None or message.via_bot_id is not None:
             if '查岗提醒' in (message.raw_text or '') and not message.out:
@@ -30,14 +30,18 @@ class Automation:
             if self.store.confirm(self.account, target, number):
                 await self.activity("confirmed", f"编号 {number} 已收到登记确认")
             return
-        prompt = parse_reply(message.raw_text or "", rule, message.id)
-        if not prompt:
-            if '查岗提醒' in (message.raw_text or ''):
+        candidates = [(rule, parse_reply(message.raw_text or '', rule, message.id))
+                      for rule in rules(config) if rule['target'] == target]
+        matches = [(rule, prompt) for rule, prompt in candidates if prompt]
+        if not matches:
+            if candidates and '查岗提醒' in (message.raw_text or ''):
                 await self.activity('skipped', '目标机器人的查岗消息格式无法识别，未发送')
             return
+        # 列表顺序是明确的优先级；仅提醒任务不遮挡已启用任务。
+        rule, prompt = next(((rule, prompt) for rule, prompt in matches if rule['automatic']), matches[0])
         def remember(mode, reason=''):
             date = message.date.timestamp() if isinstance(message.date, datetime) and message.date.tzinfo is not None else 0
-            self.store.remember_prompt(self.account, target, prompt, message.id, date, mode, reason)
+            self.store.remember_prompt(self.account, target, prompt, message.id, date, mode, reason, rule['id'], rule['name'])
         if not rule["automatic"]:
             remember('reminder')
             await self.activity("prompt", f"编号 {prompt.number} 已识别，仅提醒")
@@ -45,8 +49,8 @@ class Automation:
         async with self.lock:
             # 队列等待期间可能暂停或修改规则，重新读取再决定。
             config = self.settings()
-            current_rule = config["rule"]
-            if current_rule != rule or config["pause_all"] or config["pause_sends"]:
+            current_rule = next((value for value in rules(config) if value['id'] == rule['id']), None)
+            if current_rule is None or not current_rule['automatic'] or current_rule['armed_at'] != rule['armed_at'] or revision(current_rule) != revision(rule) or config["pause_all"] or config["pause_sends"]:
                 remember('skipped', '规则已变化或新发送已暂停')
                 return
             current = now or datetime.now(timezone.utc)
@@ -66,7 +70,7 @@ class Automation:
                 await self.activity("skipped", f"编号 {prompt.number} 未发送：早于启用时间或超过期限")
                 return
             begun = time.monotonic()
-            if not self.store.reserve(self.account, target, prompt, message.id, timestamp):
+            if not self.store.reserve(self.account, target, prompt, message.id, timestamp, rule['id'], rule['name']):
                 remember('skipped', '该编号已尝试过，避免重复发送')
                 return
             remember('sending')

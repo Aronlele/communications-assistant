@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing main version tag, such as v0.3.2
+        description: Existing main version tag, such as v0.4.0
         required: true
         type: string
 permissions:

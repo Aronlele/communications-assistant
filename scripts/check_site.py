@@ -1,6 +1,7 @@
 from html.parser import HTMLParser
 from pathlib import Path
 import plistlib
+import re
 
 
 class Site(HTMLParser):
@@ -19,8 +20,12 @@ folder = root / 'docs'
 text = (folder / 'index.html').read_text()
 site = Site(); site.feed(text)
 assert site.headings == 1, '展示页需有一个主标题'
-version = plistlib.loads((root / 'macos/Info.plist').read_bytes())['CFBundleShortVersionString']
-assert version in text and f'/releases/tag/v{version}' in text, '展示版本和下载标签需与应用一致'
+candidate = plistlib.loads((root / 'macos/Info.plist').read_bytes())['CFBundleShortVersionString']
+release = re.search(r'<meta name="product-release" content="(\d+\.\d+\.\d+)">', text)
+assert release, '展示页需明确标记已发布版本，候选版本不能提前变更公开下载'
+version = release.group(1)
+assert tuple(map(int, version.split('.'))) <= tuple(map(int, candidate.split('.'))), '公开版本不能高于源码版本'
+assert version in text and f'/releases/tag/v{version}' in text, '展示版本和下载标签需一致'
 for ref in site.refs:
     if ref.startswith(('https://', 'mailto:', '#', 'data:')): continue
     path = (folder / ref.split('#')[0]).resolve()

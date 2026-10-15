@@ -31,7 +31,7 @@ def main():
         fixture = root / 'Model.swift'; fixture.write_text(model)
         subprocess.run(['xcrun', 'swiftc', '-swift-version', '5',
                         str(project / 'macos/Sources/APIConfiguration.swift'), str(fixture),
-                        str(project / 'macos/Sources/Views.swift'), str(project / 'macos/tests/AccountsProbe.swift'), '-o', str(binary)], check=True)
+                        str(project / 'macos/Sources/Views.swift'), str(project / 'macos/Sources/TaskViews.swift'), str(project / 'macos/tests/AccountsProbe.swift'), '-o', str(binary)], check=True)
         subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
         subprocess.run([str(binary), '--demo'], check=True)
 

@@ -24,7 +24,7 @@ def main():
                 try:
                     client.connect(address)
                     break
-                except FileNotFoundError:
+                except (FileNotFoundError, ConnectionRefusedError):
                     time.sleep(0.05)
             client.settimeout(10)
             file = client.makefile("rwb")
@@ -87,11 +87,33 @@ def main():
             assert command('state')['settings']['rule']['mode'] == 'keyword'
             command('select_account', {'slot': 'legacy'})
             assert command('state')['settings']['rule']['mode'] == 'fixed'
+            first = command('task_save', {'id': 'new', 'name': '关键词演示任务', 'target': '1003',
+                                           'mode': 'keyword', 'sample_text': prompt})
+            first_id = first['saved_task_id']
+            preview = command('task_preview', {'id': first_id, 'text': prompt})
+            assert preview['recognized'] and preview['number'] == '12' and preview['keyword'] == '完成'
+            second = command('task_save', {'id': 'new', 'name': '固定回复演示任务', 'target': '1002',
+                                            **template, 'sample_text': template['match_text']})
+            second_id = second['saved_task_id']
+            assert first_id != second_id and len(second['tasks']) == 2
+            assert not any(rule['automatic'] for rule in second['tasks'])
+            assert next(row for row in second['accounts'] if row['slot'] == 'legacy')['task_count'] == 2
+            assert command('task_results', {'status': 'attention'})['count'] == 0
+            command('setup_complete')
+            command('select_account', {'slot': second_slot})
+            assert len(command('state')['tasks']) == 0
+            command('select_account', {'slot': 'legacy'})
+            state = command('state')
+            assert state['settings']['setup_completed']
+            assert next(rule for rule in state['tasks'] if rule['id'] == first_id)['sample_text'] == prompt
+            command('task_delete', {'id': second_id, 'confirmed_id': second_id})
+            command('task_delete', {'id': 'legacy', 'confirmed_id': 'legacy'})
+            assert len(command('state')['tasks']) == 1
             command("shutdown")
             process.wait(timeout=10)
             assert process.returncode == 0
             assert not Path(address).exists()
-            print("Packaged engine: IPC, demo isolation, search, preview, pause, export, permissions and shutdown passed")
+            print("Packaged engine: IPC, account isolation, multi-task save/preview/delete, sample persistence, results, setup, search, pause, backup/export and shutdown passed")
         finally:
             if process.poll() is None:
                 process.terminate()

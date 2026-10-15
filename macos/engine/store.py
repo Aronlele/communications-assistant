@@ -13,7 +13,9 @@ DEFAULTS = {
     "pause_all": False, "pause_sends": False, "archive_paused": False,
     "retention_days": 30, "quota_mb": 1024, "images": False,
     "online": False, "timezone": "Asia/Shanghai", "weekly": [[] for _ in range(7)],
+    "tasks": [], "resume_tasks": [], "setup_completed": False,
     "rule": {"target": 0, "title": "", "automatic": False, "armed_at": 0,
+             "name": "原有回复任务", "priority": 0, "prompt_template": "", "sample_text": "",
              "preview_validated": False, "allow_user_test": False,
              "mode": "keyword", "match_text": "", "match_mode": "exact", "reply_text": "1", "valid_minutes": 5,
              "sending_limited": False, "sending_weekly": [[] for _ in range(7)], "sending_timezone": "Asia/Shanghai"},
@@ -32,11 +34,11 @@ class Store:
         os.chmod(path, 0o600)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 3:
+        if version > 4:
             self.db.close()
             raise RuntimeError("数据版本较新，请使用更新版本的应用")
-        if version in (1, 2):
-            backup_path = self.root / "assistant.before-v3.sqlite"
+        if version in (1, 2, 3):
+            backup_path = self.root / "assistant.before-v4.sqlite"
             backup = sqlite3.connect(backup_path)
             try:
                 self.db.backup(backup)
@@ -83,6 +85,12 @@ class Store:
             execution_columns = {row[1] for row in self.db.execute("PRAGMA table_info(executions)")}
             if "deadline" not in execution_columns:
                 self.db.execute("ALTER TABLE executions ADD COLUMN deadline REAL")
+            for table in ('executions', 'prompts'):
+                existing = {row[1] for row in self.db.execute(f'PRAGMA table_info({table})')}
+                for field, default in (('task_id', 'legacy'), ('task_name', '原有回复任务')):
+                    if field not in existing:
+                        self.db.execute(f"ALTER TABLE {table} ADD COLUMN {field} TEXT DEFAULT '{default}'")
+            self.db.execute('CREATE INDEX IF NOT EXISTS execution_source ON executions(account,target,prompt)')
             message_columns = {row[1] for row in self.db.execute("PRAGMA table_info(messages)")}
             for name, definition in {"reply_to": "INTEGER DEFAULT 0", "forwarded": "INTEGER DEFAULT 0", "edited_at": "REAL DEFAULT 0", "deleted": "INTEGER DEFAULT 0", "media_state": "TEXT DEFAULT ''", "media_attempts": "INTEGER DEFAULT 0", "media_retry_at": "REAL DEFAULT 0", "media_error": "TEXT DEFAULT ''", "media_uid": "TEXT DEFAULT ''"}.items():
                 if name not in message_columns:
@@ -90,7 +98,7 @@ class Store:
             conversation_columns = {row[1] for row in self.db.execute("PRAGMA table_info(conversations)")}
             if "username" not in conversation_columns:
                 self.db.execute("ALTER TABLE conversations ADD COLUMN username TEXT DEFAULT ''")
-            self.db.execute("PRAGMA user_version=3")
+            self.db.execute("PRAGMA user_version=4")
         # 发送中的进程已退出：无法证明平台没有收到，必须保留去重账本。
         with self.db:
             self.db.execute("UPDATE executions SET status='send_unknown' WHERE status='sending'")
@@ -222,11 +230,13 @@ class Store:
             f"WHERE {where} ORDER BY m.date DESC,m.id DESC LIMIT ? OFFSET ?", [*args, limit, offset])
         return {"count": count, "messages": [dict(r) for r in rows]}
 
-    def reserve(self, account, target, prompt, message_id, date):
+    def reserve(self, account, target, prompt, message_id, date, task_id='legacy', task_name='原有回复任务'):
         with self.db:
-            result = self.db.execute("INSERT OR IGNORE INTO executions(account,target,number,status,keyword,prompt,date,updated,sent_id,deadline) VALUES(?,?,?,?,?,?,?,?,NULL,?)",
+            result = self.db.execute("INSERT OR IGNORE INTO executions(account,target,number,status,keyword,prompt,date,updated,sent_id,deadline,task_id,task_name) SELECT ?,?,?,?,?,?,?,?,NULL,?,?,? "
+                                     "WHERE NOT EXISTS(SELECT 1 FROM executions WHERE account=? AND target=? AND prompt=? AND prompt>0)",
                                      (account, target, prompt.number, "sending", prompt.keyword,
-                                      message_id, date, time.time(), date + prompt.window_minutes * 60))
+                                      message_id, date, time.time(), date + prompt.window_minutes * 60, task_id, task_name,
+                                      account, target, message_id))
         return result.rowcount == 1
 
     def execution_status(self, account, target, number, status, sent_id=None):
@@ -251,10 +261,42 @@ class Store:
             row["receipt_overdue"] = row["status"] == "sent" and row["deadline"] is not None and now >= row["deadline"] + 300
         return result
 
-    def remember_prompt(self, account, target, prompt, message_id, date, mode, reason=''):
+    def remember_prompt(self, account, target, prompt, message_id, date, mode, reason='', task_id='legacy', task_name='原有回复任务'):
         with self.db:
-            self.db.execute('INSERT INTO prompts VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(account,target,message_id) DO UPDATE SET mode=excluded.mode,reason=excluded.reason',
-                            (account, target, message_id, prompt.number, prompt.keyword, date, date + prompt.window_minutes * 60 if date > 0 else None, mode, reason))
+            self.db.execute("INSERT INTO prompts(account,target,message_id,number,keyword,date,deadline,mode,reason,task_id,task_name) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+                            "ON CONFLICT(account,target,message_id) DO UPDATE SET mode=excluded.mode,reason=excluded.reason "
+                            "WHERE prompts.mode NOT IN ('sent','send_unknown','sending') OR "
+                            "(prompts.mode='sending' AND excluded.mode IN ('sent','send_unknown'))",
+                            (account, target, message_id, prompt.number, prompt.keyword, date, date + prompt.window_minutes * 60 if date > 0 else None, mode, reason, task_id, task_name))
+
+    def results(self, account, task_id='', status='', offset=0, limit=50):
+        clauses, args = ['account=?'], [account]
+        if task_id:
+            clauses.append('task_id=?'); args.append(task_id)
+        if status == 'attention':
+            clauses.append("(status='send_unknown' OR (status='sent' AND deadline IS NOT NULL AND deadline+300<=?))")
+            args.append(time.time())
+        elif status:
+            clauses.append('status=?'); args.append(status)
+        # 一条来源消息一行；保留只有旧发送账本、没有 prompts 的历史记录。
+        query = """WITH results AS (
+            SELECT e.account,e.target,e.number,e.keyword,e.prompt AS message_id,e.date,e.updated,e.deadline,
+                   e.status,e.sent_id,e.task_id,e.task_name,'' AS reason
+              FROM executions e
+            UNION ALL
+            SELECT p.account,p.target,p.number,p.keyword,p.message_id,p.date,p.date,p.deadline,
+                   CASE WHEN p.mode='reminder' THEN 'reminder' ELSE 'skipped' END,NULL,p.task_id,p.task_name,p.reason
+              FROM prompts p WHERE NOT EXISTS(SELECT 1 FROM executions e
+                    WHERE e.account=p.account AND e.target=p.target AND e.prompt=p.message_id)
+        ) """
+        where = ' AND '.join(clauses)
+        count = self.db.execute(query + 'SELECT count(*) FROM results WHERE ' + where, args).fetchone()[0]
+        rows = [dict(row) for row in self.db.execute(query + 'SELECT * FROM results WHERE ' + where +
+                                                    ' ORDER BY updated DESC,target,message_id DESC LIMIT ? OFFSET ?',
+                                                    [*args, limit, offset])]
+        for row in rows:
+            row['receipt_overdue'] = row['status'] == 'sent' and row['deadline'] is not None and time.time() >= row['deadline'] + 300
+        return {'count': count, 'rows': rows}
 
     def prompts(self, account):
         return [dict(row) for row in self.db.execute('SELECT * FROM prompts WHERE account=? ORDER BY date DESC LIMIT 200', (account,))]

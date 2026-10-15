@@ -9,6 +9,7 @@ from pathlib import Path
 from telethon.errors import FloodWaitError
 
 from engine.service import PROTOCOL, Service, storage_error
+from engine.tasks import rules
 
 
 class AccountService(Service):
@@ -76,7 +77,14 @@ class AccountManager:
     def account_list(self):
         return [{'slot': slot, 'account': service.account, 'identity': service.identity,
                  'auth': service.auth, 'connected': bool(service.demo or (service.client and service.client.is_connected() and service.auth == 'ready')),
-                 'automatic': service.settings()['rule']['automatic'],
+                 'automatic': any(rule['automatic'] for rule in rules(service.settings())),
+                 'task_count': len(rules(service.settings())),
+                 'enabled_tasks': sum(rule['automatic'] for rule in rules(service.settings())),
+                 'resume_count': len(service.settings().get('resume_tasks', [])),
+                 'attention_count': service.store.results(service.account, status='attention', limit=1)['count'],
+                 'pause_sends': service.settings()['pause_sends'], 'quota_paused': service.quota_paused,
+                 'last_sync': service.last_sync, 'cooldown': service.cooldown,
+                 'setup_completed': service.settings()['setup_completed'],
                  'pause_all': service.settings()['pause_all'], 'error_present': bool(service.error),
                  'data_directory': '' if slot == 'legacy' else 'accounts/' + slot}
                 for slot, service in self.services.items()]

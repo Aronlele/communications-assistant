@@ -45,7 +45,7 @@ def startup_quality(executable):
                     client.settimeout(5)
                     while True:
                         try: client.connect(address); break
-                        except FileNotFoundError:
+                        except (FileNotFoundError, ConnectionRefusedError):
                             if process.poll() is not None or time.perf_counter() - begin > 10: raise RuntimeError('引擎启动失败')
                             time.sleep(.01)
                     file = client.makefile('rwb'); state = json.loads(file.readline())

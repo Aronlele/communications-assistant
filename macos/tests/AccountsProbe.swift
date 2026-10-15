@@ -52,6 +52,27 @@ struct AccountsProbe {
         model.receive(["id": request.string("id"), "slot": "legacy", "result": ["messages": [["text": "私密"]]]])
         check(!completed, "迟到的旧账号查询不能覆盖新账号")
         check(accountStatus(["connected": true, "error_present": true]).contains("需检查"), "后台账号异常应在账号菜单中提示")
+        var taskState = state("legacy")
+        var taskData = taskState.object("data")
+        taskData["tasks"] = [["id": "legacy", "automatic": true], ["id": "second-task", "automatic": false, "resume_pending": true]]
+        taskState["data"] = taskData
+        model.selection = .automation
+        model.receive(taskState)
+        check(model.enabledTaskCount == 1 && model.pendingRecovery.count == 1, "任务数量与待恢复状态独立统计")
+        check(model.selection == .automation, "周期状态刷新不能把任务编辑页强制切到向导")
+        model.accounts = [["slot": "legacy", "account": 101, "connected": true], ["slot": second, "auth": "disconnected"]]
+        check(model.accountAttentionCount == 0, "未登录空入口不计为故障")
+        model.accounts[1] = ["slot": second, "account": 202, "auth": "offline", "connected": false]
+        check(model.accountAttentionCount == 1, "已有身份离线应在全局总览中提示")
+        model.accounts[1] = ["slot": second, "auth": "identity", "connected": false]
+        check(model.accountAttentionCount == 1, "待确认身份应进入全局关注数量")
+        model.accounts = accountRows
+        model.showTaskMessage(["target": 42, "message_id": 71])
+        let taskRequest = model.probeRequests.last!
+        check(taskRequest.string("method") == "notification_context" && taskRequest.string("slot") == "legacy", "任务原消息查询固定来源账号")
+        model.receive(["id": taskRequest.string("id"), "slot": "legacy", "result": ["messages": [["id": 71]], "source": "remote"]])
+        check(model.showContext && model.context.first?.number("id") == 71, "任务结果可只读定位来源消息")
+        model.showContext = false
         model.demo = false
         check(!model.canRemoveAccount, "已连接账号不能直接移除")
         let empty = "22222222-2222-4222-8222-222222222222"
@@ -72,7 +93,7 @@ struct AccountsProbe {
         model.receive(["event": "state", "data": ["slot": "legacy", "active_slot": "legacy",
             "accounts": [["slot": "legacy", "auth": "disconnected"]], "auth": "disconnected"]])
         check(!model.canRemoveAccount, "至少保留一个登录入口")
-        print("Native multi-account state: 26 checks passed")
+        print("Native multi-account state: 33 checks passed")
         exit(0)
     }
 }

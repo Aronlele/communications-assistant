@@ -25,6 +25,8 @@ from engine.store import DEFAULTS, Store
 from engine.profile import VERSION, validate_profile
 from engine.backup import create_backup, inspect_backup, restore_backup
 from engine.reply_rule import parse_reply, validate_template
+from engine.tasks import task_rule, disarm_all, forget_resume
+from engine.task_commands import command as task_command, task_state
 
 
 PROTOCOL = 1
@@ -97,9 +99,12 @@ class Service:
             if (self.root / avatar).is_file():
                 self.identity['avatar'] = str(avatar)
             self.auth = "offline"
-            cfg = self.store.settings(cached_account)
-            cfg["rule"].update(automatic=False, armed_at=0)
-            self.store.save_settings(cached_account, cfg)
+            self.prepare_recovery()
+
+    def prepare_recovery(self):
+        cfg = self.store.settings(self.account)
+        disarm_all(cfg, remember=True)
+        self.store.save_settings(self.account, cfg)
 
     def spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -156,6 +161,7 @@ class Service:
             "activities": self.store.activities(self.account),
             "executions": self.store.executions(self.account), "ranges": self.store.ranges(self.account),
             "prompts": self.store.prompts(self.account),
+            "tasks": task_state(cfg), "task_results": self.store.results(self.account),
             "syncing_chats": sorted(self.syncing_chats),
             "schedule": [{"start": a.timestamp(), "end": b.timestamp()} for a, b in next_intervals],
         }
@@ -219,7 +225,7 @@ class Service:
             if method == "apply_device_profile":
                 api_id, api_hash = self.client.api_id, self.client.api_hash
                 cfg = self.settings()
-                cfg["rule"].update(automatic=False, armed_at=0)
+                disarm_all(cfg, remember=True)
                 self.store.save_settings(self.account, cfg)
                 self.auth = "offline"
                 return await self.connect({"api_id": api_id, "api_hash": api_hash})
@@ -293,7 +299,9 @@ class Service:
             await self.seed_demo()
         else:
             self.require_account()
-            if method == "dialogs":
+            if method.startswith('task_') or method == 'setup_complete':
+                return await task_command(self, method, args)
+            elif method == "dialogs":
                 await self.refresh_dialogs()
             elif method == "settings":
                 await self.update_settings(args)
@@ -347,7 +355,7 @@ class Service:
                 self.server_profile = {key: getattr(current, key) for key in ('device_model', 'system_version', 'app_version', 'app_name', 'country', 'region')}
             elif method == 'send_test':
                 self.require_account(live=True)
-                target = self.settings()['rule']['target']
+                target = task_rule(self.settings(), args.get('id', 'legacy'))['target']
                 text = args.get('text', '')
                 if self.demo or not target or args.get('confirmed_target') != target:
                     raise ValueError('请先确认当前绑定机器人的固定身份')
@@ -365,6 +373,7 @@ class Service:
                 template = validate_template(args)
                 cfg = self.settings()
                 cfg['rule'].update(template, automatic=False, armed_at=0, preview_validated=False)
+                forget_resume(cfg, 'legacy')
                 self.store.save_settings(self.account, cfg)
             elif method == "preview":
                 cfg = self.settings()
@@ -377,7 +386,9 @@ class Service:
             elif method == 'follow_system_timezone':
                 zone = args['timezone']; validate([[] for _ in range(7)], zone)
                 cfg = self.settings(); cfg.update(timezone=zone, quiet_timezone=zone)
-                cfg['rule'].update(sending_timezone=zone, automatic=False, armed_at=0)
+                for rule in [cfg['rule'], *cfg['tasks']]:
+                    rule.update(sending_timezone=zone, automatic=False, armed_at=0)
+                cfg['resume_tasks'] = []
                 self.store.save_settings(self.account, cfg); self.system_zone = zone
                 await self.activity('settings', '已采用新的系统时区，在线、静音与发送时段已调整；自动回复恢复仅提醒')
             elif method == 'schedule_preview':
@@ -434,6 +445,7 @@ class Service:
                 cfg = self.settings()
                 cfg["rule"].update(sending_limited=bool(args["limited"]), sending_weekly=weekly,
                                    sending_timezone=zone, automatic=False, armed_at=0)
+                forget_resume(cfg, 'legacy')
                 self.store.save_settings(self.account, cfg)
                 await self.activity("rule", "允许发送时段已保存，规则恢复仅提醒，请重新确认后启用")
             elif method in ("import_preview", "import_legacy"):
@@ -488,6 +500,7 @@ class Service:
                         if row['status'] == 'confirmed':
                             self.store.db.execute("UPDATE executions SET status='confirmed' WHERE account=? AND target=? AND number=?", (self.account, target, row['number']))
                     cfg = self.settings(); cfg['rule'].update(automatic=False, armed_at=0)
+                    forget_resume(cfg, 'legacy')
                     self.store.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (self.account, json.dumps(cfg, ensure_ascii=False)))
                 await self.activity('import', f'旧发送账本已合并 {len(rows)} 条，保留已有编号，自动回复恢复仅提醒')
             elif method == "context":
@@ -624,8 +637,7 @@ class Service:
             cfg["timezone"] = self.system_zone
             cfg["quiet_timezone"] = self.system_zone
             cfg["rule"]["sending_timezone"] = self.system_zone
-        cfg["rule"]["automatic"] = False
-        cfg["rule"]["armed_at"] = 0
+        disarm_all(cfg, remember=True)
         self.store.save_settings(self.account, cfg)
         self.automation = Automation(self.store, self.account, self.settings, self.send_keyword, self.activity, self.started)
         self.harden_session()
@@ -726,6 +738,7 @@ class Service:
         if not target:
             cfg = self.settings()
             cfg["rule"] = DEFAULTS["rule"].copy()
+            forget_resume(cfg, 'legacy')
             self.store.save_settings(self.account, cfg)
             return
         if self.demo:
@@ -745,6 +758,7 @@ class Service:
                            automatic=enable, armed_at=time.time() if enable else 0,
                            allow_user_test=user_test and not entity.bot,
                            preview_validated=previous['preview_validated'] if previous['target'] == entity.id else False)
+        forget_resume(cfg, 'legacy')
         self.entities[entity.id] = entity
         self.store.save_settings(self.account, cfg)
         await self.activity("rule", "已开启所选对象的自动回复" if enable else "规则已保存，仅提醒")
@@ -1084,7 +1098,7 @@ class Service:
         return {"count": len(public), "path": str(path)}
 
     def diagnostics(self):
-        return {"version": VERSION, "protocol": PROTOCOL, "schema": 3, "demo": self.demo,
+        return {"version": VERSION, "protocol": PROTOCOL, "schema": 4, "demo": self.demo,
                 "auth": self.auth, "connection": bool(self.client and self.client.is_connected()),
                 "archive_count": sum(c["count"] for c in self.store.conversations(self.account)),
                 "usage_bytes": self.store.usage(self.account), "quota_paused": self.quota_paused,
@@ -1093,6 +1107,9 @@ class Service:
                 "note": "不包含身份、凭据、消息正文或关键词"}
 
     async def logout(self):
+        if self.account:
+            cfg = self.settings(); disarm_all(cfg)
+            self.store.save_settings(self.account, cfg)
         self.closing = True
         self.auth = "logging_out"
         self.generation += 1
@@ -1148,7 +1165,7 @@ class Service:
                             connected = self.client.is_connected()
                             if connected and not await self.client.is_user_authorized():
                                 self.auth = "offline"
-                                cfg["rule"].update(automatic=False, armed_at=0)
+                                disarm_all(cfg, remember=True)
                                 self.store.save_settings(self.account, cfg)
                                 self.error = "Telegram 会话已失效，请重新登录；本地归档仍可浏览"
                                 connected = False

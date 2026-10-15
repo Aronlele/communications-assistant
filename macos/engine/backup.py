@@ -13,12 +13,14 @@ from engine.profile import validate_profile
 from engine.schedule import validate
 from engine.store import DEFAULTS, Store
 from engine.reply_rule import validate_template
+from engine.tasks import disarm_all
 
 TABLES = ('accounts', 'settings', 'conversations', 'messages', 'executions', 'activities', 'ranges', 'prompts')
 
 
 def safe_settings(value):
     if not isinstance(value, dict): raise ValueError('备份设置必须为对象')
+    value = json.loads(json.dumps(value))
     result = json.loads(json.dumps(DEFAULTS))
     for key in DEFAULTS:
         if key in value: result[key] = value[key]
@@ -26,6 +28,28 @@ def safe_settings(value):
     result['rule'] = {key: result['rule'].get(key, default) for key, default in DEFAULTS['rule'].items()}
     result['rule'].update(automatic=False, armed_at=0)
     result['rule'].update(validate_template(result['rule']))
+    if not isinstance(result['tasks'], list) or len(result['tasks']) > 50:
+        raise ValueError('备份中的任务列表无效')
+    identifiers = set()
+    for rule in result['tasks']:
+        if not isinstance(rule, dict) or not isinstance(rule.get('id'), str) or not rule['id'] or rule['id'] == 'legacy' or rule['id'] in identifiers:
+            raise ValueError('备份中的任务标识无效或重复')
+        identifiers.add(rule['id'])
+        for key, default in DEFAULTS['rule'].items():
+            if key not in rule: rule[key] = json.loads(json.dumps(default))
+        rule.update(validate_template(rule), automatic=False, armed_at=0)
+        if type(rule['target']) is not int or rule['target'] <= 0:
+            raise ValueError('备份中的任务对象无效')
+        validate(rule['sending_weekly'], rule['sending_timezone'])
+    disarm_all(result)
+    for rule in [result['rule'], *result['tasks']]:
+        if not isinstance(rule.get('name'), str) or not 1 <= len(rule['name']) <= 60:
+            raise ValueError('备份中的任务名称无效')
+        if type(rule.get('priority')) is not int or not 0 <= rule['priority'] <= 100:
+            raise ValueError('备份中的任务优先级无效')
+        for key in ('preview_validated', 'allow_user_test', 'sending_limited'):
+            if type(rule[key]) is not bool: raise ValueError('备份中的任务开关无效')
+        rule['preview_validated'] = False
     result['online'] = False
     for prefix, timezone in (('weekly', 'timezone'), ('quiet_weekly', 'quiet_timezone')):
         validate(result[prefix], result[timezone])
@@ -85,7 +109,7 @@ def create_backup(root, account, destination):
         os.close(descriptor)
         try:
             with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr('manifest.json', json.dumps({'format': 'communications-assistant-backup', 'version': 1, 'schema': 3, 'account': account, 'counts': counts, 'device_profile': profile}, ensure_ascii=False))
+                archive.writestr('manifest.json', json.dumps({'format': 'communications-assistant-backup', 'version': 1, 'schema': 4, 'account': account, 'counts': counts, 'device_profile': profile}, ensure_ascii=False))
                 archive.write(Path(folder) / 'assistant.sqlite', 'account.sqlite')
                 for value in media:
                     path = media_path(root, account, value)
@@ -116,7 +140,7 @@ def inspect_backup(path, account, folder=None, metadata_only=False):
         if archive.getinfo('manifest.json').file_size > 65536:
             raise ValueError('备份说明文件过大')
         manifest = json.loads(archive.read('manifest.json'))
-        if manifest.get('format') != 'communications-assistant-backup' or manifest.get('version') != 1 or manifest.get('schema') != 3:
+        if manifest.get('format') != 'communications-assistant-backup' or manifest.get('version') != 1 or manifest.get('schema') not in (3, 4):
             raise ValueError('不支持此备份格式或版本')
         if manifest.get('account') != account:
             raise ValueError('备份属于其他 Telegram 账号，请先登录对应账号')
@@ -131,6 +155,13 @@ def inspect_backup(path, account, folder=None, metadata_only=False):
                 with archive.open(item) as source, destination.open('wb') as output:
                     shutil.copyfileobj(source, output, 1024 * 1024)
                 os.chmod(destination, 0o600)
+    if manifest['schema'] == 3:
+        # 只迁移解包后的业务备份副本，旧文件与当前账号数据都不改写。
+        with tempfile.TemporaryDirectory(prefix='tga-backup-migrate-') as migrated:
+            shutil.copyfile(Path(folder) / 'account.sqlite', Path(migrated) / 'assistant.sqlite')
+            upgraded = Store(migrated); upgraded.close()
+            shutil.copyfile(Path(migrated) / 'assistant.sqlite', Path(folder) / 'account.sqlite')
+        manifest['schema'] = 4
     database = sqlite3.connect((Path(folder) / 'account.sqlite').as_uri() + '?mode=ro&immutable=1', uri=True)
     try:
         database.execute('PRAGMA trusted_schema=OFF')

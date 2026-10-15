@@ -1,6 +1,6 @@
 # 技术架构
 
-SwiftUI/AppKit 负责六页窗口、菜单栏、通知、系统语音、登录项、钥匙串和子进程生命周期。Python/Telethon 引擎负责连接、同步、规则和 SQLite 单写入；两个进程通过带请求 ID、来源入口和协议版本的私有 Unix socket 通信，不监听网络语音端口。
+SwiftUI/AppKit 负责九页窗口、菜单栏、通知、系统语音、登录项、钥匙串和子进程生命周期。Python/Telethon 引擎负责连接、同步、规则和 SQLite 单写入；两个进程通过带请求 ID、来源入口和协议版本的私有 Unix socket 通信，不监听网络语音端口。
 
 ```mermaid
 flowchart LR
@@ -19,12 +19,13 @@ flowchart LR
 | --- | --- |
 | Sources/App.swift | 主窗口、菜单栏和退出生命周期 |
 | Sources/Model.swift | 通信、来源状态、通知定位、语音队列和引擎监督 |
-| Sources/Views.swift | 页面与配置交互 |
+| Sources/Views.swift / TaskViews.swift | 归档等基础页面；多任务、结果、账号总览与准备恢复向导 |
 | Sources/APIConfiguration.swift | API 来源、格式和资源读取 |
 | engine/accounts.py | 多账号入口、路由、独立锁、状态汇总 |
 | engine/service.py | 每账号登录、事件、归档、同步和控制 |
 | engine/store.py | SQLite 消息、配置、游标、提示、活动及永久去重账本 |
-| engine/automation.py / reply_rule.py | 执行条件、固定匹配、网络发送和结果 |
+| engine/automation.py / reply_rule.py | 单消息选取优先任务、受限模板/固定匹配、网络发送和结果 |
+| engine/tasks.py / task_commands.py | 兼容旧规则、任务原子保存、预览、启停及恢复意图 |
 | engine/schedule.py | IANA 时区、跨午夜、DST 和七天展开 |
 | engine/backup.py / importer.py | 当前账号备份、受限恢复和旧资料导入 |
 
@@ -35,3 +36,5 @@ flowchart LR
 升级恢复需保持去重账本，未知 schema 拒绝运行。退出先阻止新发送，有限等待后关闭所有客户端和数据库。每个应用根目录使用引擎锁，禁止多个写入者同时使用相同资料。
 
 目前没有插件框架、独立守护进程或产品云端。service.py 与 Views.swift 的功能集中，后续多规则扩展应沿现有边界拆分，不能为一次性需求增加通用编排架构。
+
+0.4.0 以原有 settings.rule 保留旧任务，新任务位于 settings.tasks，避免移动现有配置。schema 4 为发送和提示记录增加任务归属快照；原编号唯一键保留，同一来源消息在插入发送账本时跨任务防重。修改条件后清除对应恢复意图，重启保留开启意图但关闭实际发送；恢复必须再次核对账号、规则版本和目标身份。结果中心读取统一视图，不执行重试。

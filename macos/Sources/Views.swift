@@ -142,7 +142,9 @@ struct MainView: View {
                         Button { model.info = "" } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("关闭操作提示")
                     }.font(.caption).padding(10).background(.quaternary.opacity(0.3))
                 }
-                if !model.ready && model.selection == .settings { LoginSettingsView() }
+                if model.selection == .accounts { AccountsOverviewView() }
+                else if model.selection == .setup { SetupRecoveryView() }
+                else if !model.ready && model.selection == .settings { LoginSettingsView() }
                 else if !model.ready { LoginView() }
                 else {
                     switch model.selection ?? .overview {
@@ -150,6 +152,9 @@ struct MainView: View {
                     case .reminders: RemindersView()
                     case .archive: ArchiveView()
                     case .automation: AutomationView()
+                    case .results: TaskResultsView()
+                    case .accounts: AccountsOverviewView()
+                    case .setup: SetupRecoveryView()
                     case .activity: ActivityView()
                     case .settings: SettingsView()
                     }
@@ -323,6 +328,13 @@ struct OverviewView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 PageTitle(title: "概览", subtitle: "\(model.accountName)，你的通讯工作状态都在这里。")
+                if !model.settings.bool("setup_completed") || !model.pendingRecovery.isEmpty {
+                    Panel(title: model.pendingRecovery.isEmpty ? "完成使用准备" : "有 \(model.pendingRecovery.count) 个任务等待恢复确认", icon: "list.bullet.clipboard") {
+                        Text("核对通知、归档及任务状态；恢复发送前查看账号和规则。")
+                        Button("打开准备与恢复向导") { model.selection = .setup }
+                    }
+                }
+                Button("查看所有账号 · \(model.accountAttentionCount) 个账号需要关注") { model.selection = .accounts }
                 Panel(title: model.connection, icon: "network") {
                     HStack {
                         Text("最近同步：\(dateText(model.state.number("last_sync")))").foregroundStyle(.secondary)
@@ -335,7 +347,7 @@ struct OverviewView: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
                     module("消息提醒", "bell", model.settings.bool("reminders") ? "已开启" : "已关闭", "系统通知与来源语音", .reminders)
                     module("聊天归档", "archivebox", "\(model.conversations.filter { $0.bool("selected") }.count) 个会话", "已使用 \(ByteCountFormatter.string(fromByteCount: Int64(model.state.number("usage")), countStyle: .file))", .archive)
-                    module("自动回复", "bolt", model.settings.object("rule").bool("automatic") ? "已开启固定模板回复" : "仅提醒", model.settings.bool("pause_sends") ? "新发送已暂停" : "发送结果不明时不会重试", .automation)
+                    module("自动回复", "bolt", "\(model.enabledTaskCount) / \(model.taskRules.count) 个任务已开启", model.settings.bool("pause_sends") ? "新发送已暂停" : "发送结果不明时不会重试", .automation)
                     module("在线状态策略", "clock", model.settings.bool("online") ? "已启用实验功能" : "默认关闭", "连接状态与他人看到的在线状态不同", .settings)
                 }
                 if model.state.bool("quota_paused") {
@@ -348,7 +360,7 @@ struct OverviewView: View {
                 if !attention.isEmpty {
                     Panel(title: "\(attention.count) 条发送需要核对", icon: "exclamationmark.bubble") {
                         Text("尚未收到登记回执或发送结果无法确认。请在原会话中核对。")
-                        Button("查看执行记录") { model.selection = .automation }
+                        Button("查看任务结果") { model.selection = .results }
                     }
                 }
                 Panel(title: "最近活动", icon: "clock.arrow.circlepath") {
@@ -654,218 +666,6 @@ struct ContextView: View {
     }
 }
 
-struct AutomationView: View {
-    @EnvironmentObject var model: AppModel
-    @ViewState private var target = ""
-    @ViewState private var sample = "🔔 查岗提醒（编号 123）\n请在 5 分钟内只回复下面的关键词：\n今天完成\n回复时限说明：\n以机器人记录为准"
-    @ViewState private var confirmEnable = false
-    @ViewState private var enableTarget: Int64 = 0
-    @ViewState private var enableTitle = ""
-    @ViewState private var testText = "通讯助手连接测试"
-    @ViewState private var testTarget: Int64 = 0
-    @ViewState private var testTitle = ""
-    @ViewState private var confirmedTestText = ""
-    @ViewState private var showTest = false
-    @ViewState private var userTest = false
-    @ViewState private var limited = false
-    @ViewState private var sendingZone = "Asia/Shanghai"
-    @ViewState private var sendingWeekly = Array(repeating: "", count: 7)
-    @ViewState private var replyMode = "keyword"
-    @ViewState private var matchMode = "exact"
-    @ViewState private var matchText = ""
-    @ViewState private var fixedReply = "1"
-    @ViewState private var validMinutes = 5
-    @ViewState private var enableSummary = ""
-    var rule: Object { model.settings.object("rule") }
-    var templateDirty: Bool {
-        replyMode != rule.string("mode") || matchMode != rule.string("match_mode") ||
-        matchText != rule.string("match_text") || fixedReply != rule.string("reply_text") || validMinutes != Int(rule.number("valid_minutes"))
-    }
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                PageTitle(title: "自动化", subtitle: "为当前账号选择对象、匹配提示和回复内容，预览后确认开启。")
-                Panel(title: "查岗回复规则", icon: "bolt.shield") {
-                    TextField("机器人或联系人用户名、数字 ID", text: $target).textFieldStyle(.roundedBorder)
-                    HStack {
-                        Button("保存为仅提醒") {
-                            model.request("rule", ["target": target, "automatic": false, "allow_user_test": userTest]) { result in
-                                if let result {
-                                    let saved = result.object("settings").object("rule")
-                                    target = saved.number("target") > 0 ? String(Int64(saved.number("target"))) : ""
-                                    userTest = saved.bool("allow_user_test")
-                                }
-                            }
-                        }.disabled(model.demo)
-                        if rule.number("target") > 0 {
-                            Button(rule.bool("automatic") ? "关闭自动回复" : "开启自动回复") {
-                                if rule.bool("automatic") { model.request("rule", ["target": String(Int64(rule.number("target"))), "automatic": false]) }
-                                else {
-                                    enableTarget = Int64(rule.number("target")); enableTitle = rule.string("title")
-                                    enableSummary = rule.string("mode") == "fixed" ? "匹配方式：\(rule.string("match_mode") == "exact" ? "全文相同" : "包含指定文本")\n提示：\(rule.string("match_text"))\n将回复：\(rule.string("reply_text"))\n本地有效期：\(Int(rule.number("valid_minutes"))) 分钟；每条消息只提交一次，登记未核实。" : "将发送新查岗提示中的精确关键词，每个编号只提交一次。"
-                                    confirmEnable = true
-                                }
-                            }.disabled(model.demo || (!rule.bool("automatic") && (!rule.bool("preview_validated") || templateDirty || target != String(Int64(rule.number("target"))) || userTest != rule.bool("allow_user_test"))))
-                        }
-                        Spacer()
-                        Button(model.settings.bool("pause_sends") ? "恢复新发送" : "暂停新发送") {
-                            model.control(model.settings.bool("pause_sends") ? "resume_sends" : "pause_sends")
-                        }
-                    }
-                    if rule.number("target") > 0 {
-                        Text("绑定：\(rule.string("title")) · ID \(String(Int64(rule.number("target"))))")
-                        Text(rule.bool("automatic") ? "已开启 · 只处理本次启动及启用之后的新提示" : "仅提醒 · 不自动发送").foregroundStyle(rule.bool("automatic") ? Color.accentColor : .secondary)
-                    }
-                    Text("默认只选择机器人；普通联系人需先开启下方允许选项。转发、群消息、过期提示和旧提示均不会自动回复。关闭规则后仍处理已有编号发送的登记回执。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if model.demo { Text("演示模式禁止自动发送。").foregroundStyle(.orange) }
-                    Toggle("允许选择普通联系人", isOn: $userTest)
-                    if rule.bool("allow_user_test") { Text("当前选择普通联系人：开启时请核对身份和实际发送内容，不能绑定本人。").foregroundStyle(.orange) }
-                    if !rule.bool("preview_validated") { Text("开启前请保存回复方式，并在下方成功预览来自此对象的提示。").font(.caption).foregroundStyle(.secondary) }
-                    Button("预览并导入旧发送账本") { model.chooseLegacyLedger() }.disabled(model.busy || rule.number("target") == 0)
-                }
-                Panel(title: "自定义提示与回复", icon: "slider.horizontal.3") {
-                    Picker("回复方式", selection: $replyMode) {
-                        Text("从查岗提示提取关键词").tag("keyword")
-                        Text("匹配提示，回复固定内容").tag("fixed")
-                    }
-                    if replyMode == "fixed" {
-                        Picker("提示匹配方式", selection: $matchMode) {
-                            Text("全文相同").tag("exact")
-                            Text("包含指定文本").tag("contains")
-                        }
-                        Text("需要匹配的提示文本")
-                        TextEditor(text: $matchText).font(.body.monospaced()).frame(height: 90)
-                        TextField("固定回复内容，例如 1 或 在岗", text: $fixedReply).textFieldStyle(.roundedBorder)
-                        HStack {
-                            Text("本地回复有效期（分钟）")
-                            TextField("1–1440", value: $validMinutes, formatter: NumberFormatter()).frame(width: 90).textFieldStyle(.roundedBorder)
-                        }
-                        Text("有效期从消息发出时间计算，默认 5 分钟，是本地防止回复旧消息的限制。此模式未配置登记回执，仅记录发送结果。全文匹配忽略首尾空白及换行格式；包含匹配范围更宽，请完整预览。").font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text("兼容现有编号、关键词和回复时限模板；关键词可随每条提示变化，并按同编号回执核对登记。").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("保存回复方式，恢复仅提醒") {
-                        model.request("reply_template", ["mode": replyMode, "match_mode": matchMode, "match_text": matchText, "reply_text": fixedReply, "valid_minutes": validMinutes]) { result in
-                            if let result { loadTemplate(result.object("settings").object("rule")); model.preview = [:]; model.info = "回复方式已保存，请预览提示后再确认开启" }
-                        }
-                    }.disabled(model.demo || model.busy || model.state.number("account") <= 0)
-                    if templateDirty { Text("修改尚未保存。先保存，再预览及开启；当前已保存规则仍按原设置运行。").font(.caption).foregroundStyle(.orange) }
-                }
-                Panel(title: "手动连接测试", icon: "paperplane") {
-                    TextField("单行测试消息，最多 100 字符", text: $testText).textFieldStyle(.roundedBorder)
-                    Button("发送测试…") {
-                        testTarget = Int64(rule.number("target")); testTitle = rule.string("title"); confirmedTestText = testText; showTest = true
-                    }.disabled(model.demo || model.busy || rule.number("target") == 0 || !model.state.bool("connected"))
-                    Text("测试会向当前机器人发送真实消息，需单独核对目标与内容，不构成查岗登记确认。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Panel(title: "模板预览", icon: "doc.text.magnifyingglass") {
-                    TextEditor(text: $sample).font(.body.monospaced()).frame(height: 130)
-                    Button("识别预览，不发送") { model.request("preview", ["text": sample]) { model.preview = $0 ?? [:] } }.disabled(templateDirty)
-                    if !model.preview.isEmpty {
-                        Text(model.preview.bool("recognized") ? (model.preview.string("reply_mode") == "fixed" ? "匹配成功 · 将回复：\(model.preview.string("keyword")) · 本地有效期 \(Int(model.preview.number("window_minutes"))) 分钟 · 登记未核实" : "编号 \(model.preview.string("number")) · \(Int(model.preview.number("window_minutes"))) 分钟 · 将回复：\(model.preview.string("keyword"))") : "未匹配已保存的规则，不会自动回复这条消息")
-                            .textSelection(.enabled).foregroundStyle(.secondary)
-                    }
-                }
-                Panel(title: "允许发送时段", icon: "calendar.badge.clock") {
-                    Toggle("限制自动回复的时间", isOn: $limited)
-                    Text("默认随时允许；启用限制后，空白时段禁止发送。这与在线状态策略独立。").font(.caption).foregroundStyle(.secondary)
-                    if limited {
-                        TextField("IANA 时区", text: $sendingZone).textFieldStyle(.roundedBorder)
-                        ForEach(0..<7, id: \.self) { day in
-                            HStack {
-                                Text(["周一", "周二", "周三", "周四", "周五", "周六", "周日"][day]).frame(width: 48)
-                                TextField("09:00-18:00，多段用逗号分隔", text: $sendingWeekly[day]).textFieldStyle(.roundedBorder)
-                            }
-                        }
-                    }
-                    Button("保存发送时段") {
-                        guard let weekly = parseWeekly(sendingWeekly) else { model.error = "时间段应使用 09:00-18:00 格式"; return }
-                        model.request("rule_hours", ["limited": limited, "timezone": sendingZone, "weekly": weekly])
-                    }
-                    Text("修改时段后恢复为仅提醒，确认后再启用自动回复。").font(.caption).foregroundStyle(.secondary)
-                }
-                Panel(title: "执行记录", icon: "list.bullet.rectangle") {
-                    if model.executions.isEmpty { Text("暂无发送记录。规则默认只提醒。").foregroundStyle(.secondary) }
-                    ForEach(model.executions, id: \.executionKey) { row in
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("\(reference(row.string("number"))) · \(status(row.string("status")))").font(.headline)
-                                Text(dateText(row.number("updated"))).font(.caption).foregroundStyle(.secondary)
-                                if row.number("deadline") > 0 { Text("\(row.string("number").hasPrefix("message:") ? "本地有效期截止" : "响应截止")：\(dateText(row.number("deadline")))").font(.caption).foregroundStyle(.secondary) }
-                                if row.bool("receipt_overdue") { Text("已超过响应截止 5 分钟，仍未收到同编号回执，请核对原会话").font(.caption).foregroundStyle(.orange) }
-                                if row.string("status") == "send_unknown" { Text("结果待核对，不会自动重试").font(.caption).foregroundStyle(.orange) }
-                            }
-                            Spacer()
-                            Button("打开会话") {
-                                model.openTelegramChat(Int64(row.number("target")))
-                            }
-                            Button("复制回复内容") {
-                                NSPasteboard.general.clearContents(); NSPasteboard.general.setString(row.string("keyword"), forType: .string)
-                            }.disabled(row.string("keyword").isEmpty)
-                        }.padding(.vertical, 6)
-                    }
-                }
-                Panel(title: "仅提醒与跳过的提示", icon: "bell.badge") {
-                    let prompts = model.state.rows("prompts").filter { ["reminder", "skipped"].contains($0.string("mode")) }
-                    if prompts.isEmpty { Text("暂无提示记录。关键词按本地保留期清理。").foregroundStyle(.secondary) }
-                    ForEach(prompts, id: \.promptKey) { row in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("\(reference(row.string("number"))) · \(row.string("mode") == "reminder" ? "仅提醒" : "已跳过")").font(.headline)
-                            Text("回复内容：\(row.string("keyword")) · 截止：\(dateText(row.number("deadline")))").textSelection(.enabled)
-                            if !row.string("reason").isEmpty { Text(row.string("reason")).font(.caption).foregroundStyle(.secondary) }
-                            HStack {
-                                Button("打开来源会话") { model.openTelegramChat(Int64(row.number("target"))) }
-                                Button("复制回复内容") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(row.string("keyword"), forType: .string) }
-                            }
-                        }.padding(.vertical, 6)
-                    }
-                }
-            }.padding(28)
-        }
-        .onAppear {
-            loadTemplate()
-            userTest = rule.bool("allow_user_test")
-            target = rule.number("target") > 0 ? String(Int64(rule.number("target"))) : ""
-            limited = rule.bool("sending_limited")
-            sendingZone = rule.string("sending_timezone").isEmpty ? "Asia/Shanghai" : rule.string("sending_timezone")
-            if let value = rule["sending_weekly"] as? [[[String]]], value.count == 7 {
-                sendingWeekly = value.map { $0.map { $0.joined(separator: "-") }.joined(separator: ", ") }
-            }
-        }
-        .onChange(of: rule.string("mode")) { loadTemplate() }
-        .alert("开启自动回复", isPresented: $confirmEnable) {
-            Button("取消", role: .cancel) { }
-            Button("确认开启") { model.request("rule", ["target": String(enableTarget), "automatic": true, "confirmed_target": enableTarget]) }
-        } message: {
-            Text("账号：\(model.accountName)。对象：\(enableTitle)（ID \(enableTarget)）。\n\(enableSummary)\n发送结果不明时不重试，需要人工核对。")
-        }
-        .alert("确认发送测试消息", isPresented: $showTest) {
-            Button("取消", role: .cancel) { }
-            Button("向此对象发送一次") { model.request("send_test", ["text": confirmedTestText, "confirmed_target": testTarget]) { result in if result != nil { model.info = "测试消息已发送，请在原会话核对；此结果不代表查岗登记成功" } } }
-        } message: { Text("账号：\(model.accountName)。目标：\(testTitle)（ID \(testTarget)）。将发送：\n\(confirmedTestText)") }
-        .alert("合并旧发送账本", isPresented: $model.showLedger) {
-            Button("取消", role: .cancel) { }
-            Button("确认归属并合并") { model.importLegacyLedger() }
-        } message: {
-            Text("请确认文件属于当前账号 \(model.accountName)，目标为 \(rule.string("title"))（ID \(Int64(model.ledgerPreview.number("target")))）。将合并 \(Int(model.ledgerPreview.number("count"))) 条编号记录；已有记录保留，发送中记录转为待核对，不补发历史提示，自动回复恢复仅提醒。")
-        }
-    }
-    func status(_ value: String) -> String {
-        ["sending": "发送中", "sent": "已发送，等待登记确认", "sent_unverified": "已发送，登记未核实", "confirmed": "登记已确认", "send_unknown": "发送结果待核对", "expired": "已过期"][value] ?? value
-    }
-    func reference(_ value: String) -> String { value.hasPrefix("message:") ? "消息 \(value.dropFirst(8))" : "编号 \(value)" }
-    func loadTemplate(_ saved: Object? = nil) {
-        let values = saved ?? rule
-        replyMode = values.string("mode").isEmpty ? "keyword" : values.string("mode")
-        matchMode = values.string("match_mode").isEmpty ? "exact" : values.string("match_mode")
-        matchText = values.string("match_text")
-        fixedReply = values.string("reply_text").isEmpty ? "1" : values.string("reply_text")
-        validMinutes = values.number("valid_minutes") > 0 ? Int(values.number("valid_minutes")) : 5
-    }
-}
-
 struct ActivityRows: View {
     let rows: [Object]
     var body: some View {
@@ -1161,11 +961,12 @@ struct MenuView: View {
             if model.accounts.count > 1 { Text("其他已登录账号也在后台运行").font(.caption).foregroundStyle(.secondary) }
             if model.ready {
                 Text("最近同步：\(dateText(model.state.number("last_sync")))").font(.caption).foregroundStyle(.secondary)
-                Text(model.settings.object("rule").bool("automatic") ? "固定模板自动回复已开启" : "自动回复：仅提醒").font(.caption)
+                Text("自动回复：\(model.enabledTaskCount) / \(model.taskRules.count) 个任务开启").font(.caption)
                 let count = model.executions.filter { $0.string("status") == "send_unknown" }.count
                 if count > 0 { Label("\(count) 条发送待核对", systemImage: "exclamationmark.circle").foregroundStyle(.orange) }
             }
             Divider()
+            Button("所有账号 · \(model.accountAttentionCount) 个需关注") { model.selection = .accounts; openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
             Button("打开通讯助手") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
             if model.demo { Button("返回真实账号登录") { model.switchMode(false) } }
             if model.ready {
