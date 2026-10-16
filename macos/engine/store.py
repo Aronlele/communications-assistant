@@ -15,7 +15,7 @@ DEFAULTS = {
     "online": False, "timezone": "Asia/Shanghai", "weekly": [[] for _ in range(7)],
     "tasks": [], "resume_tasks": [], "setup_completed": False,
     "rule": {"target": 0, "title": "", "automatic": False, "armed_at": 0,
-             "name": "原有回复任务", "priority": 0, "prompt_template": "", "sample_text": "",
+             "name": "原有回复任务", "priority": 0, "prompt_template": "", "sample_text": "", "sample_cases": [],
              "preview_validated": False, "allow_user_test": False,
              "mode": "keyword", "match_text": "", "match_mode": "exact", "reply_text": "1", "valid_minutes": 5,
              "sending_limited": False, "sending_weekly": [[] for _ in range(7)], "sending_timezone": "Asia/Shanghai"},
@@ -34,11 +34,11 @@ class Store:
         os.chmod(path, 0o600)
         self.db.row_factory = sqlite3.Row
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 4:
+        if version > 5:
             self.db.close()
             raise RuntimeError("数据版本较新，请使用更新版本的应用")
-        if version in (1, 2, 3):
-            backup_path = self.root / "assistant.before-v4.sqlite"
+        if version in (1, 2, 3, 4):
+            backup_path = self.root / "assistant.before-v5.sqlite"
             backup = sqlite3.connect(backup_path)
             try:
                 self.db.backup(backup)
@@ -72,6 +72,9 @@ class Store:
         CREATE TABLE IF NOT EXISTS ranges(
             id INTEGER PRIMARY KEY AUTOINCREMENT, account INTEGER, chat INTEGER,
             start REAL, end REAL, kind TEXT, detail TEXT);
+        CREATE TABLE IF NOT EXISTS archive_deletions(
+            account INTEGER, chat INTEGER, id INTEGER, date REAL, media_only INTEGER DEFAULT 0,
+            PRIMARY KEY(account,chat,id));
         CREATE TABLE IF NOT EXISTS prompts(
             account INTEGER, target INTEGER, message_id INTEGER, number TEXT, keyword TEXT,
             date REAL, deadline REAL, mode TEXT, reason TEXT,
@@ -98,7 +101,7 @@ class Store:
             conversation_columns = {row[1] for row in self.db.execute("PRAGMA table_info(conversations)")}
             if "username" not in conversation_columns:
                 self.db.execute("ALTER TABLE conversations ADD COLUMN username TEXT DEFAULT ''")
-            self.db.execute("PRAGMA user_version=4")
+            self.db.execute("PRAGMA user_version=5")
         # 发送中的进程已退出：无法证明平台没有收到，必须保留去重账本。
         with self.db:
             self.db.execute("UPDATE executions SET status='send_unknown' WHERE status='sending'")
@@ -163,6 +166,11 @@ class Store:
         # 内容和历史游标同时提交；实时消息不会越过尚未补齐的历史游标。
         with self.db:
             for record in records:
+                if self.archive_excluded(account, chat, record['id'], record['date']):
+                    self.remove_media(record.get('media', '')); continue
+                if self.archive_excluded(account, chat, record['id'], record['date'], media=True):
+                    self.remove_media(record.get('media', ''))
+                    record = dict(record, media='', media_state='cleared', media_retry_at=0)
                 self.db.execute("INSERT INTO messages(account,chat,id,date,sender,text,outgoing,media,attachment,edited,reply_to,forwarded,edited_at,deleted,media_state,media_attempts,media_retry_at,media_error,media_uid) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                                 "ON CONFLICT(account,chat,id) DO UPDATE SET "
                                 "date=excluded.date,sender=excluded.sender,text=CASE WHEN messages.deleted=1 THEN '' ELSE excluded.text END,"
@@ -332,7 +340,45 @@ class Store:
         media = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file()) if folder.exists() else 0
         return int(text + media)
 
+    def archive_excluded(self, account, chat, identifier, date, media=False):
+        return self.db.execute("SELECT 1 FROM archive_deletions WHERE account=? AND chat=? AND (id=? OR (id=0 AND date>?)) AND (media_only=0 OR ?=1) LIMIT 1",
+                               (account, chat, identifier, date, int(media))).fetchone() is not None
+
+    def clean_messages(self, account, rows, media_only=False):
+        with self.db:
+            for row in rows:
+                self.db.execute("INSERT INTO archive_deletions VALUES(?,?,?,?,?) ON CONFLICT(account,chat,id) DO UPDATE SET media_only=MIN(media_only,excluded.media_only),date=MAX(date,excluded.date)",
+                                (account, row['chat'], row['id'], row['date'], int(media_only)))
+                if media_only:
+                    self.db.execute("UPDATE messages SET media='',media_state='cleared',media_retry_at=0,media_error='' WHERE account=? AND chat=? AND id=?", (account,row['chat'],row['id']))
+                else:
+                    self.db.execute('DELETE FROM messages WHERE account=? AND chat=? AND id=?', (account,row['chat'],row['id']))
+        for row in rows: self.remove_media(row['media'])
+        # 自动迁移快照也清除对应内容；用户另存的外部 ZIP 备份不在本地清理范围。
+        for path in self.root.glob('assistant.before-v*.sqlite'):
+            backup = sqlite3.connect(path)
+            try:
+                backup.execute('PRAGMA secure_delete=ON')
+                with backup:
+                    for row in rows:
+                        if media_only:
+                            backup.execute("UPDATE messages SET media='' WHERE account=? AND chat=? AND id=?", (account,row['chat'],row['id']))
+                        else: backup.execute('DELETE FROM messages WHERE account=? AND chat=? AND id=?', (account,row['chat'],row['id']))
+                backup.execute('VACUUM')
+            finally: backup.close()
+
+    def clear_archive(self, account, chat, cutoff, keep_archiving, rows=None):
+        rows = rows if rows is not None else [dict(r) for r in self.db.execute('SELECT * FROM messages WHERE account=? AND chat=? AND date<=?', (account,chat,cutoff))]
+        cursor = max((r['id'] for r in rows), default=0)
+        self.clean_messages(account, rows)
+        with self.db:
+            self.db.execute('INSERT INTO archive_deletions VALUES(?,?,0,?,0) ON CONFLICT(account,chat,id) DO UPDATE SET date=MAX(date,excluded.date),media_only=0', (account,chat,cutoff))
+            self.db.execute('UPDATE conversations SET selected=CASE WHEN ? THEN selected ELSE 0 END,initialized=1,cursor=MAX(cursor,?) WHERE account=? AND chat=?', (int(keep_archiving),cursor,account,chat))
+            self.db.execute('DELETE FROM ranges WHERE account=? AND chat=?', (account,chat))
+
     def erase_chat(self, account, chat):
+        with self.db:
+            self.db.execute('INSERT INTO archive_deletions VALUES(?,?,0,?,0) ON CONFLICT(account,chat,id) DO UPDATE SET date=MAX(date,excluded.date),media_only=0', (account,chat,time.time()))
         media = [r[0] for r in self.db.execute("SELECT media FROM messages WHERE account=? AND chat=?", (account, chat))]
         with self.db:
             self.db.execute("DELETE FROM messages WHERE account=? AND chat=?", (account, chat))
@@ -347,7 +393,7 @@ class Store:
         for c in self.conversations(account):
             self.erase_chat(account, c["chat"])
         with self.db:
-            for table in ("settings", "conversations", "executions", "activities", "ranges", "prompts"):
+            for table in ("settings", "conversations", "executions", "activities", "ranges", "prompts", "archive_deletions"):
                 self.db.execute(f"DELETE FROM {table} WHERE account=?", (account,))
             self.db.execute("DELETE FROM accounts WHERE id=?", (account,))
         self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -378,7 +424,7 @@ class Store:
                         if table in tables:
                             backup.execute(f"DELETE FROM {table} WHERE account=? AND chat=?", (account, chat))
                 else:
-                    for table in ("messages", "message_search", "settings", "conversations", "executions", "activities", "ranges", "prompts"):
+                    for table in ("messages", "message_search", "settings", "conversations", "executions", "activities", "ranges", "prompts", "archive_deletions"):
                         if table in tables:
                             backup.execute(f"DELETE FROM {table} WHERE account=?", (account,))
                     if "accounts" in tables:

@@ -14,8 +14,9 @@ from engine.schedule import validate
 from engine.store import DEFAULTS, Store
 from engine.reply_rule import validate_template
 from engine.tasks import disarm_all
+from engine.task_templates import validate_cases
 
-TABLES = ('accounts', 'settings', 'conversations', 'messages', 'executions', 'activities', 'ranges', 'prompts')
+TABLES = ('accounts', 'settings', 'conversations', 'messages', 'executions', 'activities', 'ranges', 'prompts', 'archive_deletions')
 
 
 def safe_settings(value):
@@ -26,6 +27,7 @@ def safe_settings(value):
         if key in value: result[key] = value[key]
     if not isinstance(result['rule'], dict): raise ValueError('备份规则无效')
     result['rule'] = {key: result['rule'].get(key, default) for key, default in DEFAULTS['rule'].items()}
+    result['rule']['sample_cases'] = validate_cases(result['rule'].get('sample_cases', []))
     result['rule'].update(automatic=False, armed_at=0)
     result['rule'].update(validate_template(result['rule']))
     if not isinstance(result['tasks'], list) or len(result['tasks']) > 50:
@@ -37,7 +39,7 @@ def safe_settings(value):
         identifiers.add(rule['id'])
         for key, default in DEFAULTS['rule'].items():
             if key not in rule: rule[key] = json.loads(json.dumps(default))
-        rule.update(validate_template(rule), automatic=False, armed_at=0)
+        rule.update(validate_template(rule), sample_cases=validate_cases(rule.get('sample_cases', [])), automatic=False, armed_at=0)
         if type(rule['target']) is not int or rule['target'] <= 0:
             raise ValueError('备份中的任务对象无效')
         validate(rule['sending_weekly'], rule['sending_timezone'])
@@ -109,7 +111,7 @@ def create_backup(root, account, destination):
         os.close(descriptor)
         try:
             with zipfile.ZipFile(temporary, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.writestr('manifest.json', json.dumps({'format': 'communications-assistant-backup', 'version': 1, 'schema': 4, 'account': account, 'counts': counts, 'device_profile': profile}, ensure_ascii=False))
+                archive.writestr('manifest.json', json.dumps({'format': 'communications-assistant-backup', 'version': 1, 'schema': 5, 'account': account, 'counts': counts, 'device_profile': profile}, ensure_ascii=False))
                 archive.write(Path(folder) / 'assistant.sqlite', 'account.sqlite')
                 for value in media:
                     path = media_path(root, account, value)
@@ -140,7 +142,7 @@ def inspect_backup(path, account, folder=None, metadata_only=False):
         if archive.getinfo('manifest.json').file_size > 65536:
             raise ValueError('备份说明文件过大')
         manifest = json.loads(archive.read('manifest.json'))
-        if manifest.get('format') != 'communications-assistant-backup' or manifest.get('version') != 1 or manifest.get('schema') not in (3, 4):
+        if manifest.get('format') != 'communications-assistant-backup' or manifest.get('version') != 1 or manifest.get('schema') not in (3, 4, 5):
             raise ValueError('不支持此备份格式或版本')
         if manifest.get('account') != account:
             raise ValueError('备份属于其他 Telegram 账号，请先登录对应账号')
@@ -155,13 +157,13 @@ def inspect_backup(path, account, folder=None, metadata_only=False):
                 with archive.open(item) as source, destination.open('wb') as output:
                     shutil.copyfileobj(source, output, 1024 * 1024)
                 os.chmod(destination, 0o600)
-    if manifest['schema'] == 3:
+    if manifest['schema'] in (3, 4):
         # 只迁移解包后的业务备份副本，旧文件与当前账号数据都不改写。
         with tempfile.TemporaryDirectory(prefix='tga-backup-migrate-') as migrated:
             shutil.copyfile(Path(folder) / 'account.sqlite', Path(migrated) / 'assistant.sqlite')
             upgraded = Store(migrated); upgraded.close()
             shutil.copyfile(Path(migrated) / 'assistant.sqlite', Path(folder) / 'account.sqlite')
-        manifest['schema'] = 4
+        manifest['schema'] = 5
     database = sqlite3.connect((Path(folder) / 'account.sqlite').as_uri() + '?mode=ro&immutable=1', uri=True)
     try:
         database.execute('PRAGMA trusted_schema=OFF')
@@ -216,12 +218,14 @@ def restore_backup(store, account, folder, manifest):
                 destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 shutil.copyfile(origin, destination); os.chmod(destination, 0o600); copied.append(destination)
             with store.db:
-                for table in ('conversations', 'messages', 'executions', 'prompts'):
+                for table in ('conversations', 'messages', 'executions', 'prompts', 'archive_deletions'):
                     cursor = source.execute(f'SELECT * FROM {table} WHERE account=?', (account,))
                     columns = [item[0] for item in cursor.description]
                     statement = f"INSERT OR IGNORE INTO {table}({','.join(columns)}) VALUES({','.join('?' for _ in columns)})"
                     for batch in iter(lambda: cursor.fetchmany(500), []):
                         store.db.executemany(statement, [tuple(row) for row in batch])
+                for row in source.execute('SELECT * FROM archive_deletions WHERE account=?', (account,)):
+                    store.db.execute('INSERT INTO archive_deletions VALUES(?,?,?,?,?) ON CONFLICT(account,chat,id) DO UPDATE SET date=MAX(date,excluded.date),media_only=MIN(media_only,excluded.media_only)', tuple(row))
                 for row in source.execute("SELECT target,number FROM executions WHERE account=? AND status='confirmed'", (account,)):
                     store.db.execute("UPDATE executions SET status='confirmed' WHERE account=? AND target=? AND number=?", (account, row['target'], row['number']))
                 store.db.execute("UPDATE executions SET status='send_unknown' WHERE account=? AND status='sending'", (account,))
@@ -233,6 +237,13 @@ def restore_backup(store, account, folder, manifest):
                     for row in source.execute(f'SELECT {names} FROM {table} WHERE account=?', (account,)):
                         if not store.db.execute(f"SELECT 1 FROM {table} WHERE " + ' AND '.join(f'{key}=?' for key in columns) + ' LIMIT 1', tuple(row)).fetchone():
                             store.db.execute(f"INSERT INTO {table}({names}) VALUES({','.join('?' for _ in columns)})", tuple(row))
+                for row in list(store.db.execute('SELECT * FROM messages WHERE account=?', (account,))):
+                    if store.archive_excluded(account, row['chat'], row['id'], row['date']):
+                        store.remove_media(row['media'])
+                        store.db.execute('DELETE FROM messages WHERE account=? AND chat=? AND id=?', (account,row['chat'],row['id']))
+                    elif store.archive_excluded(account, row['chat'], row['id'], row['date'], media=True):
+                        store.remove_media(row['media'])
+                        store.db.execute("UPDATE messages SET media='',media_state='cleared',media_retry_at=0 WHERE account=? AND chat=? AND id=?", (account,row['chat'],row['id']))
                 store.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (account, json.dumps(settings, ensure_ascii=False)))
                 store.db.execute('INSERT OR REPLACE INTO preferences VALUES(?,?)', ('device_profile', json.dumps(profile, ensure_ascii=False)))
                 store.db.execute("INSERT INTO activities(account,date,kind,detail) VALUES(?,strftime('%s','now'),'restore',?)", (account, '用户确认恢复单账号备份，消息与账本合并；自动回复和在线策略已关闭'))

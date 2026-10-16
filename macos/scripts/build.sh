@@ -32,7 +32,7 @@ mkdir -p "$STAGING/Contents/MacOS" "$STAGING/Contents/Resources"
 ditto "$BUILD_ROOT/dist/tgengine" "$STAGING/Contents/Resources/Engine"
 SDK="$(xcrun --sdk macosx --show-sdk-path)"
 xcrun swiftc -swift-version 5 -O -target arm64-apple-macos14.0 -sdk "$SDK" \
-    "$PROJECT_ROOT/macos/Sources/APIConfiguration.swift" "$PROJECT_ROOT/macos/Sources/Model.swift" "$PROJECT_ROOT/macos/Sources/Views.swift" "$PROJECT_ROOT/macos/Sources/TaskViews.swift" "$PROJECT_ROOT/macos/Sources/App.swift" \
+    "$PROJECT_ROOT/macos/Sources/APIConfiguration.swift" "$PROJECT_ROOT/macos/Sources/Model.swift" "$PROJECT_ROOT/macos/Sources/Views.swift" "$PROJECT_ROOT/macos/Sources/WorkbenchViews.swift" "$PROJECT_ROOT/macos/Sources/TaskViews.swift" "$PROJECT_ROOT/macos/Sources/App.swift" \
     -o "$STAGING/Contents/MacOS/CommunicationsAssistant"
 ditto "$PROJECT_ROOT/macos/Resources" "$STAGING/Contents/Resources"
 cp "$PROJECT_ROOT/macos/Info.plist" "$STAGING/Contents/Info.plist"

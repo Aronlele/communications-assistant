@@ -157,7 +157,7 @@ class StoreTests(unittest.TestCase):
         self.store.put_messages(2, 11, [record(1, "其他账号内容")])
         self.store.db.execute("PRAGMA user_version=1")
         self.store.close(); self.store = Store(self.folder.name)
-        backup_path = Path(self.folder.name) / "assistant.before-v4.sqlite"
+        backup_path = Path(self.folder.name) / "assistant.before-v5.sqlite"
         self.assertTrue(backup_path.exists())
         self.store.erase_account(1)
         backup = sqlite3.connect(backup_path)

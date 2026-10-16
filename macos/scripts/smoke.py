@@ -100,6 +100,23 @@ def main():
             state = command('state')
             assert state['settings']['setup_completed']
             assert next(rule for rule in state['tasks'] if rule['id'] == first_id)['sample_text'] == prompt
+            assert len(command('task_templates')['rows']) == 3
+            copied = command('task_duplicate', {'id': second_id})['saved_task_id']
+            assert not next(rule for rule in command('state')['tasks'] if rule['id'] == copied)['automatic']
+            portable = command('task_template_export', {'id': second_id})
+            assert 'target' not in portable['rule'] and not command('task_template_import', {'document': portable})['automatic']
+            cases = [{'text': template['match_text'], 'should_match': True, 'expected_reply': '1'}, {'text': '普通通知', 'should_match': False}]
+            command('task_save', dict(command('state')['tasks'][1], id=second_id, target='1002', sample_cases=cases))
+            assert command('task_cases_preview', {'id': second_id})['passed']
+            preview = command('archive_cleanup_preview', {'scope': 'selected', 'messages': [{'chat': 1001, 'id': 1}]})
+            assert preview['count'] == 1
+            command('archive_cleanup_apply', {'token': preview['token'], 'confirmed_account': 999001})
+            assert command('search', {'chat': 1001})['count'] == 2
+            assert command('issues')['rows'] is not None
+            command('select_account', {'slot': second_slot})
+            assert command('search', {'chat': 1001})['count'] == 3
+            command('select_account', {'slot': 'legacy'})
+            command('task_delete', {'id': copied, 'confirmed_id': copied})
             command('task_delete', {'id': second_id, 'confirmed_id': second_id})
             command('task_delete', {'id': 'legacy', 'confirmed_id': 'legacy'})
             assert len(command('state')['tasks']) == 1
@@ -107,7 +124,7 @@ def main():
             process.wait(timeout=10)
             assert process.returncode == 0
             assert not Path(address).exists()
-            print("Packaged engine: IPC, account isolation, multi-task save/preview/delete, sample persistence, results, setup, search, pause, backup/export and shutdown passed")
+            print("Packaged engine: IPC, account isolation, multi-task save/preview/delete, sample persistence, results, setup, search, pause, backup/export, local cleanup, copying/templates, multi-case validation, issue actions and shutdown passed")
         finally:
             if process.poll() is None:
                 process.terminate()

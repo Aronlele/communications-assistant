@@ -240,7 +240,7 @@ class MultiTaskTests(unittest.IsolatedAsyncioTestCase):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             folder = Path(destination) / 'unpacked'; folder.mkdir()
             manifest = inspect_backup(path, 1, folder)
-            self.assertEqual(manifest['schema'], 4)
+            self.assertEqual(manifest['schema'], 5)
             restored = Store(Path(destination) / 'restored')
             restore_backup(restored, 1, folder, manifest)
             self.assertEqual(restored.db.execute('PRAGMA quick_check').fetchone()[0], 'ok')

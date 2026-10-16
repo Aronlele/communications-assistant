@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 private let checkinSample = "🔔 查岗提醒（编号 00176）\n\n嗨，天枢 👋\n\n查岗小助手来啦～\n\n请在20分钟内只回复下面的关键词：\n\n香蕉\n\n回复时限说明：\n20分钟内回复：正常响应。\n20-30分钟内回复：超时回复。\n超过30分钟未正确回复：未响应。\n\n祝工作顺利 🌷"
 
@@ -25,12 +26,19 @@ struct AutomationView: View {
     @ViewState private var showDelete = false
     @ViewState private var preview: Object = [:]
     @ViewState private var previewID = ""
+    @ViewState private var templates: [Object] = []
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 PageTitle(title: "任务管理", subtitle: "\(model.accountName) · 每个任务独立设置对象、模板、回复和时段。")
                 HStack {
                     Button("新建任务", systemImage: "plus") { editor = TaskEditorItem(value: ["id": "new"]) }.buttonStyle(.borderedProminent)
+                    Menu("从模板新建") {
+                        ForEach(Array(templates.enumerated()), id: \.offset) { item in
+                            Button(item.element.string("name")) { editor = TaskEditorItem(value: item.element) }
+                        }
+                    }
+                    Button("导入任务模板…") { importTemplate() }
                     Button("查看任务结果") { model.selection = .results }
                     Spacer()
                     Button(model.settings.bool("pause_sends") ? "恢复新发送" : "暂停新发送") { model.control(model.settings.bool("pause_sends") ? "resume_sends" : "pause_sends") }
@@ -57,6 +65,7 @@ struct AutomationView: View {
                 }
             }.padding(28)
         }
+        .onAppear { model.request("task_templates") { templates = $0?.rows("rows") ?? [] } }
         .sheet(item: $editor) { item in TaskEditorView(initial: item.value) }
         .alert("确认开启任务", isPresented: $enable, presenting: confirming) { rule in
             Button("取消", role: .cancel) { }
@@ -91,6 +100,14 @@ struct AutomationView: View {
             }
             HStack {
                 Button("编辑任务") { editor = TaskEditorItem(value: rule) }
+                Menu("更多") {
+                    Button("复制为关闭的副本") { model.request("task_duplicate", ["id": rule.string("id")]) { if $0 != nil { model.info = "任务副本已创建，未开启发送；原任务保持运行" } } }
+                    Button("导出任务模板…") { exportTemplate(rule) }
+                    Button("验证全部已保存样例") {
+                        previewID = rule.string("id")
+                        model.request("task_cases_preview", ["id": rule.string("id")]) { preview = $0 ?? [:] }
+                    }.disabled(rule.rows("sample_cases").isEmpty)
+                }
                 Button("验证已保存样例") {
                     previewID = rule.string("id")
                     model.request("task_preview", ["id": rule.string("id"), "text": rule.string("sample_text")]) { preview = $0 ?? [:] }
@@ -103,10 +120,38 @@ struct AutomationView: View {
                 Button("删除…", role: .destructive) { deleting = rule; showDelete = true }
             }.disabled(model.busy)
             if !rule.bool("preview_validated") { Text("开启前请编辑任务，保存并成功预览一条真实格式的样例。").font(.caption).foregroundStyle(.secondary) }
-            if previewID == rule.string("id"), !preview.isEmpty { PreviewResult(value: preview) }
+            if previewID == rule.string("id"), !preview.isEmpty {
+                if preview["rows"] != nil { SampleSuiteResult(value: preview) } else { PreviewResult(value: preview) }
+            }
             DisclosureGroup("手动连接测试") { TaskSendTestView(rule: rule) }
         }
     }
+    func exportTemplate(_ rule: Object) {
+        model.request("task_template_export", ["id": rule.string("id")]) { value in
+            guard let value else { return }
+            let notice = NSAlert(); notice.messageText = "导出当前任务模板"
+            notice.informativeText = "包含匹配文本、回复、时段和测试样例，可能包含个人信息，请核对后分享。不包含登录凭据、目标账号或发送授权。"
+            notice.addButton(withTitle: "选择保存位置"); notice.addButton(withTitle: "取消")
+            guard notice.runModal() == .alertFirstButtonReturn else { return }
+            let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "即讯任务模板.json"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do { try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic); model.info = "任务模板已导出；接收方仍需绑定对象并确认开启" }
+            catch { model.error = "任务模板保存失败，请检查目标目录" }
+        }
+    }
+    func importTemplate() {
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size <= 512 * 1024 else { model.error = "任务模板不能超过 512 KB"; return }
+            let value = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? Object ?? [:]
+            model.request("task_template_import", ["document": value]) { result in
+                if let result { editor = TaskEditorItem(value: result); model.info = "模板已读入草稿，请重新选择当前账号的对象；尚未保存或开启" }
+            }
+        } catch { model.error = "无法读取 JSON 任务模板" }
+    }
+
 }
 
 struct PreviewResult: View {
@@ -138,8 +183,11 @@ struct TaskEditorView: View {
     @ViewState private var weekly = Array(repeating: "", count: 7)
     @ViewState private var preview: Object = [:]
     @ViewState private var previewFingerprint = ""
+    @ViewState private var cases: [TaskSampleCase] = []
+    @ViewState private var suite: Object = [:]
+    @ViewState private var suiteFingerprint = ""
     var draft: Object { ["mode": mode, "match_mode": matchMode, "match_text": matchText, "reply_text": reply,
-                        "valid_minutes": minutes, "prompt_template": custom ? template : "", "sample_text": sample] }
+                        "valid_minutes": minutes, "prompt_template": custom ? template : "", "sample_text": sample, "sample_cases": cases.map { $0.object }] }
     var fingerprint: String { (try? String(data: JSONSerialization.data(withJSONObject: draft, options: [.sortedKeys]), encoding: .utf8)) ?? "" }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -193,6 +241,18 @@ struct TaskEditorView: View {
                         else { Text("草稿已变化，请重新预览。").foregroundStyle(.orange) }
                     }
                     Divider()
+                    TaskSampleCasesView(cases: $cases)
+                    if !cases.isEmpty {
+                        Button("验证全部草稿样例，不发送") {
+                            let tested = fingerprint
+                            model.request("task_cases_preview", ["draft": draft, "cases": cases.map { $0.object }]) { value in suite = value ?? [:]; suiteFingerprint = tested }
+                        }
+                        if !suite.isEmpty {
+                            if suiteFingerprint == fingerprint { SampleSuiteResult(value: suite) }
+                            else { Text("草稿或样例已变化，请重新验证全部样例。 ").foregroundStyle(.orange) }
+                        }
+                    }
+                    Divider()
                     Stepper("优先级：\(priority)（数字越大越优先）", value: $priority, in: 0...100)
                     Toggle("限制允许发送的时段", isOn: $limited)
                     if limited {
@@ -214,11 +274,12 @@ struct TaskEditorView: View {
         .onAppear { load() }
     }
     func load() {
-        guard initial.string("id") != "new" else { return }
-        name = initial.string("name"); target = String(Int64(initial.number("target")))
+        guard initial.count > 1 else { return }
+        name = initial.string("name"); target = initial.number("target") > 0 ? String(Int64(initial.number("target"))) : ""
         mode = initial.string("mode"); matchMode = initial.string("match_mode"); matchText = initial.string("match_text")
         reply = initial.string("reply_text"); minutes = Int(initial.number("valid_minutes"))
         template = initial.string("prompt_template"); custom = !template.isEmpty
+        cases = initial.rows("sample_cases").map { TaskSampleCase(text: $0.string("text"), shouldMatch: $0.bool("should_match"), expectedReply: $0.string("expected_reply")) }
         sample = initial.string("sample_text"); allowUser = initial.bool("allow_user_test")
         priority = Int(initial.number("priority")); limited = initial.bool("sending_limited"); zone = initial.string("sending_timezone")
         if let values = initial["sending_weekly"] as? [[[String]]], values.count == 7 {
@@ -235,7 +296,14 @@ struct TaskEditorView: View {
         model.request("task_save", args) { result in
             guard let result else { return }
             let identifier = result.string("saved_task_id")
-            if savedSample.isEmpty { model.info = "任务已保存；补充并验证样例后可开启"; dismiss() }
+            if !cases.isEmpty {
+                model.request("task_cases_preview", ["id": identifier]) { tested in
+                    guard let tested else { return }
+                    model.info = tested.bool("passed") ? "任务和全部样例已保存并通过；请核对后开启" : "任务已保存，部分样例未通过，需修正后才可重新开启"
+                    dismiss()
+                }
+            }
+            else if savedSample.isEmpty { model.info = "任务已保存；补充并验证样例后可开启"; dismiss() }
             else {
                 model.request("task_preview", ["id": identifier, "text": savedSample]) { tested in
                     guard let tested else { return }
@@ -275,6 +343,7 @@ struct TaskResultsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                Button("处理异常") { model.showIssues = true }
                 PageTitle(title: "任务结果", subtitle: "\(model.accountName) · 发送动作和对方确认分别记录，结果不明时不自动重试。")
                 HStack {
                     Picker("任务", selection: $task) {
@@ -312,7 +381,8 @@ struct TaskResultsView: View {
                 }
             }.padding(28)
         }
-        .onAppear { load() }
+        .onAppear { if model.resultsAttention { status = "attention"; model.resultsAttention = false }; load() }
+        .onChange(of: model.resultsAttention) { _, value in if value { status = "attention"; offset = 0; model.resultsAttention = false; load() } }
         .onChange(of: task) { offset = 0; load() }
         .onChange(of: status) { offset = 0; load() }
         .onReceive(model.$state) { _ in if model.ready { load() } }
@@ -352,6 +422,7 @@ struct AccountsOverviewView: View {
                             Button("打开此账号") { open(account, .overview) }
                             Button("任务管理") { open(account, .automation) }
                             Button("查看结果") { open(account, .results) }
+                            Button("处理异常") { model.selectAccount(account.string("slot")); model.showIssues = true }
                             Button("准备与恢复") { open(account, .setup) }
                         }.disabled(model.busy)
                     }

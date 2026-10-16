@@ -1,4 +1,5 @@
 """任务的原子保存、预览、启停和明确恢复。不会发送测试消息。"""
+import copy
 import json
 import time
 import unicodedata
@@ -7,6 +8,7 @@ import uuid
 from telethon import types
 
 from engine.reply_rule import parse_reply, template_from_sample, validate_template
+from engine.task_templates import validate_cases, evaluate_cases, builtin_templates, import_template, FIELDS
 from engine.schedule import validate
 from engine.store import DEFAULTS
 from engine.tasks import forget_resume, rules, task_rule, revision
@@ -37,6 +39,29 @@ async def resolve_target(service, target, allow_user):
 async def command(service, method, args):
     cfg = service.settings()
     identifier = args.get('id', 'legacy')
+    if method == 'task_templates': return {'rows': builtin_templates()}
+    if method == 'task_template_import': return import_template(args.get('document'))
+    if method == 'task_template_export':
+        rule = task_rule(cfg, identifier)
+        return {'format': 'jixun-task-template', 'version': 1, 'rule': {key: rule[key] for key in FIELDS if key in rule}}
+    if method == 'task_duplicate':
+        if len(rules(cfg)) >= 50: raise ValueError('每个账号最多保存 50 个任务')
+        rule = copy.deepcopy(task_rule(cfg, identifier))
+        identifier = str(uuid.uuid4())
+        rule.update(id=identifier, name=rule.get('name', '任务')[:55]+' 副本', automatic=False, armed_at=0, preview_validated=False)
+        cfg['tasks'].append(rule)
+        service.store.save_settings(service.account, cfg)
+        await service.publish()
+        return dict(service.state(), saved_task_id=identifier)
+    if method == 'task_cases_preview':
+        rule = task_rule(cfg, identifier) if 'draft' not in args else validate_template(args['draft'])
+        cases = args.get('cases', rule.get('sample_cases', []))
+        result = evaluate_cases(rule, cases)
+        if 'draft' not in args:
+            rule['preview_validated'] = result['passed']
+            service.store.save_settings(service.account, cfg)
+            await service.publish()
+        return result
     if method == 'task_draft_preview':
         draft = validate_template(args.get('draft', {}))
         text = args.get('text', '')
@@ -82,9 +107,11 @@ async def command(service, method, args):
             target_id, title, allow_user = old['target'], old['title'], old['allow_user_test']
         else:
             target_id, title, allow_user = await resolve_target(service, target, allow_user)
-        updated = dict(old, **template, name=name.strip(), target=target_id, title=title, allow_user_test=allow_user,
+        updated = dict(old, **template, sample_cases=validate_cases(args.get('sample_cases', old.get('sample_cases', []))), name=name.strip(), target=target_id, title=title, allow_user_test=allow_user,
                        sending_weekly=weekly, sending_timezone=zone, sending_limited=limited, priority=priority)
         changed = revision(old) != revision(updated)
+        if old.get('sample_cases', []) != updated['sample_cases']:
+            updated['preview_validated'] = False
         if changed or not existing:
             updated.update(automatic=False, armed_at=0, preview_validated=False)
             forget_resume(cfg, identifier)
@@ -119,10 +146,11 @@ async def command(service, method, args):
             text = args.get('text', '')
             validate_template(dict(rule, sample_text=text))
             prompt = parse_reply(text, rule, 1)
-            rule.update(sample_text=text, preview_validated=bool(prompt))
+            suite = evaluate_cases(rule, rule['sample_cases']) if rule.get('sample_cases') else None
+            rule.update(sample_text=text, preview_validated=bool(prompt) and (suite is None or suite['passed']))
             service.store.save_settings(service.account, cfg)
             await service.publish()
-            return {'recognized': bool(prompt), 'reply_mode': rule['mode'], **(vars(prompt) if prompt else {})}
+            return {'recognized': bool(prompt), 'suite_passed': suite['passed'] if suite else True, 'reply_mode': rule['mode'], **(vars(prompt) if prompt else {})}
         if method == 'task_delete':
             if args.get('confirmed_id') != identifier:
                 raise ValueError('请确认要删除的任务')

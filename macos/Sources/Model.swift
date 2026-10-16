@@ -209,6 +209,8 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     @Published var preview: Object = [:]
     @Published var diagnostics = ""
     @Published var showDiagnostics = false
+    @Published var showIssues = false
+    @Published var resultsAttention = false
     @Published var exportSummary = ""
     @Published var showExport = false
     @Published var restorePreview: Object = [:]
@@ -242,7 +244,8 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     var openMain: (() -> Void)?
     @Published var demo: Bool
     var storageRoot: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        if demo, let path = ProcessInfo.processInfo.environment["TGA_DEMO_ROOT"] { return URL(fileURLWithPath: path, isDirectory: true) }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(demo ? "通讯助手演示" : "通讯助手", isDirectory: true)
     }
     var root: URL { selectedSlot == "legacy" ? storageRoot : storageRoot.appendingPathComponent("accounts/" + selectedSlot, isDirectory: true) }
@@ -416,7 +419,8 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             if state.number("account") != next.number("account") {
                 contextGeneration += 1
                 results = []; resultCount = 0; context = []; preview = [:]; diagnostics = ""
-                showContext = false; showDiagnostics = false; showExport = false
+                showIssues = false; resultsAttention = false
+        showContext = false; showDiagnostics = false; showExport = false
                 searchChat = "0"; query = ""; sender = ""; dateFilter = false
             }
             let previousAuth = state.string("auth")
@@ -484,6 +488,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         contextGeneration += 1; configurationRevision += 1
         results = []; resultCount = 0; context = []; preview = [:]; diagnostics = ""
         restorePreview = [:]; restorePath = ""; ledgerPreview = [:]; ledgerPath = ""
+        showIssues = false; resultsAttention = false
         showContext = false; showDiagnostics = false; showExport = false; showRestore = false; showLedger = false
         searchChat = "0"; query = ""; sender = ""; dateFilter = false
         phone = ""; code = ""; password = ""; error = ""; info = ""

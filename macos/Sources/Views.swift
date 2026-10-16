@@ -131,6 +131,7 @@ struct MainView: View {
                     HStack {
                         Label(model.error, systemImage: "exclamationmark.triangle")
                         Spacer()
+                        Button("处理异常") { model.showIssues = true }
                         if model.engineUnavailable { Button("重启消息引擎") { model.retryEngine() } }
                         Button { model.error = "" } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("关闭提示")
                     }.font(.callout).padding(12).background(.orange.opacity(0.12))
@@ -164,6 +165,7 @@ struct MainView: View {
         .frame(minWidth: 960, minHeight: 640)
         .onAppear { model.openMain = { openWindow(id: "main") } }
         .toolbar {
+            Button("处理异常", systemImage: "exclamationmark.bubble") { model.showIssues = true }
             if model.busy { ProgressView().controlSize(.small) }
             if model.ready {
                 Button(model.settings.bool("pause_all") ? "恢复当前账号" : "暂停当前账号") {
@@ -171,6 +173,7 @@ struct MainView: View {
                 }
             }
         }
+        .sheet(isPresented: $model.showIssues) { IssueCenterView() }
         .sheet(isPresented: $model.showDiagnostics) { DiagnosticsView() }
         .sheet(isPresented: $model.showContext) { ContextView() }
         .alert("导出聊天记录", isPresented: $model.showExport) {
@@ -467,6 +470,8 @@ struct ArchiveView: View {
     @ViewState private var archiveStart = Date().addingTimeInterval(-7 * 86400)
     @ViewState private var showImport = false
     @ViewState private var selectedMessage: String?
+    @ViewState private var checkedMessages = Set<String>()
+    @ViewState private var cleanup: ArchiveCleanupItem?
     @FocusState private var searchFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -492,6 +497,14 @@ struct ArchiveView: View {
             Toggle("显示已删除消息的状态", isOn: $model.includeDeleted).font(.caption).onChange(of: model.includeDeleted) { _, _ in model.search() }
             HStack {
                 Spacer()
+                Menu("清理本地记录") {
+                    Button("删除勾选消息（\(checkedMessages.count) 条）…") {
+                        let rows = model.results.filter { checkedMessages.contains($0.messageKey) }.map { ["chat": Int64($0.number("chat")), "id": Int64($0.number("id"))] }
+                        cleanup = ArchiveCleanupItem(value: ["scope": "selected", "messages": rows])
+                    }.disabled(checkedMessages.isEmpty)
+                    Button("清理当前筛选结果…") { cleanup = ArchiveCleanupItem(value: model.filters().merging(["scope": "filter"]) { _, new in new }) }
+                    Button("清空当前会话历史…") { cleanup = ArchiveCleanupItem(value: ["scope": "conversation", "chat": Int64(model.searchChat) ?? 0]) }.disabled(model.searchChat == "0")
+                }
                 Menu("导出") {
                     Button("导出 JSON") { model.previewExport("json") }
                     Button("导出文本") { model.previewExport("txt") }
@@ -502,6 +515,8 @@ struct ArchiveView: View {
             Divider()
             HStack {
                 Text("找到 \(model.resultCount) 条 · 已显示 \(model.results.count) 条").font(.caption).foregroundStyle(.secondary)
+                Button("勾选已加载（最多500条）") { checkedMessages = Set(model.results.prefix(500).map { $0.messageKey }) }.disabled(model.results.isEmpty)
+                Button("取消勾选") { checkedMessages.removeAll() }.disabled(checkedMessages.isEmpty)
                 if (model.state["syncing_chats"] as? [Int64] ?? []).count > 0 { ProgressView().controlSize(.small); Text("归档补齐中").font(.caption) }
                 Spacer()
                 Button(model.settings.bool("archive_paused") ? "恢复归档" : "暂停归档") { model.control(model.settings.bool("archive_paused") ? "resume_archive" : "pause_archive") }
@@ -520,7 +535,16 @@ struct ArchiveView: View {
                         .frame(minWidth: 200, maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     List(selection: $selectedMessage) {
-                        ForEach(model.results, id: \.messageKey) { row in MessageRow(message: row).tag(row.messageKey) }
+                        ForEach(model.results, id: \.messageKey) { row in
+                            HStack(alignment: .top) {
+                                Toggle("选择消息", isOn: Binding(get: { checkedMessages.contains(row.messageKey) }, set: { value in
+                                    if value { checkedMessages.insert(row.messageKey) } else { checkedMessages.remove(row.messageKey) }
+                                })).labelsHidden()
+                                MessageRow(message: row)
+                            }.tag(row.messageKey).contextMenu {
+                                Button("删除这条本地消息…", role: .destructive) { cleanup = ArchiveCleanupItem(value: ["scope": "selected", "messages": [["chat": Int64(row.number("chat")), "id": Int64(row.number("id"))]]]) }
+                            }
+                        }
                         if model.results.count < model.resultCount { Button("加载更多") { model.search(offset: model.results.count) } }
                     }.listStyle(.inset).frame(minWidth: 280, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -534,6 +558,8 @@ struct ArchiveView: View {
         .onAppear { model.search(); if model.searchFocusRequest > 0 { searchFocused = true } }
         .onChange(of: model.searchFocusRequest) { _, _ in searchFocused = true }
         .onChange(of: model.searchChat) { _, _ in selectedMessage = nil; model.context = []; model.search() }
+        .sheet(item: $cleanup) { ArchiveCleanupView(options: $0.value) }
+        .onChange(of: model.results.map { $0.messageKey }) { _, keys in checkedMessages.formIntersection(Set(keys)) }
         .onChange(of: selectedMessage) { _, key in if let row = model.results.first(where: { $0.messageKey == key }) { model.openContext(row, showSheet: false) } }
         .sheet(isPresented: $showConversations) {
             VStack(alignment: .leading, spacing: 16) {

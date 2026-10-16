@@ -18,6 +18,8 @@ from pathlib import Path
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError, PasswordHashInvalidError, PhoneNumberInvalidError, PhoneNumberBannedError
 
+from engine.archive_cleanup import command as archive_cleanup_command
+from engine.issues import issues
 from engine.automation import Automation
 from engine.importer import read_legacy, legacy_image, read_legacy_ledger
 from engine.schedule import active, intervals, validate
@@ -25,6 +27,7 @@ from engine.store import DEFAULTS, Store
 from engine.profile import VERSION, validate_profile
 from engine.backup import create_backup, inspect_backup, restore_backup
 from engine.reply_rule import parse_reply, validate_template
+from engine.task_templates import evaluate_cases
 from engine.tasks import task_rule, disarm_all, forget_resume
 from engine.task_commands import command as task_command, task_state
 
@@ -43,6 +46,7 @@ class Service:
         self.store = Store(root)
         self.demo = demo
         self.system_zone = system_zone
+        self.archive_cleanup = None
         self.client = None
         self.account = 0
         self.auth = "disconnected"
@@ -146,7 +150,7 @@ class Service:
         cfg = self.settings()
         next_intervals = intervals(cfg["weekly"], cfg["timezone"])
         return {
-            "protocol": PROTOCOL, "auth": self.auth,
+            "protocol": PROTOCOL, "auth": self.auth, "issues": issues(self),
             "device_profile": self.device_profile, "active_profile": self.active_profile or {}, "code_resend_at": self.code_resend_at,
             "server_profile": self.server_profile,
             "countries": self.countries,
@@ -299,6 +303,9 @@ class Service:
             await self.seed_demo()
         else:
             self.require_account()
+            if method.startswith('archive_cleanup_'):
+                return await archive_cleanup_command(self, method, args)
+            if method == 'issues': return {'rows': issues(self)}
             if method.startswith('task_') or method == 'setup_complete':
                 return await task_command(self, method, args)
             elif method == "dialogs":
@@ -379,7 +386,7 @@ class Service:
                 cfg = self.settings()
                 prompt = parse_reply(args.get("text", ""), cfg['rule'], 1)
                 if cfg['rule']['target']:
-                    cfg['rule']['preview_validated'] = bool(prompt)
+                    cfg['rule']['preview_validated'] = bool(prompt) and (not cfg['rule'].get('sample_cases') or evaluate_cases(cfg['rule'], cfg['rule']['sample_cases'])['passed'])
                     self.store.save_settings(self.account, cfg)
                     await self.publish()
                 return {"recognized": bool(prompt), "reply_mode": cfg['rule']['mode'], **(vars(prompt) if prompt else {})}
@@ -959,6 +966,7 @@ class Service:
             if getattr(message, "ttl_period", None) or getattr(getattr(message, "media", None), "ttl_seconds", None):
                 # 不把阅后即焚内容变成永久记录；游标仍可前进。
                 continue
+            if self.store.archive_excluded(account, chat, message.id, message.date.timestamp()): continue
             old = self.store.db.execute("SELECT * FROM messages WHERE account=? AND chat=? AND id=?", (account, chat, message.id)).fetchone()
             if old and old["deleted"]:
                 continue
@@ -992,7 +1000,7 @@ class Service:
                 continue
             if cfg["images"] and image:
                 record["media_state"] = "unknown_size" if not file or file.size is None else "too_large" if file.size > 10 * 1024 * 1024 else "failed"
-            if cfg["images"] and image and file and file.size is not None and file.size <= 10 * 1024 * 1024:
+            if cfg["images"] and image and file and file.size is not None and file.size <= 10 * 1024 * 1024 and not self.store.archive_excluded(account, chat, message.id, message.date.timestamp(), media=True):
                 if record["media_attempts"] >= 3:
                     record.update(media_retry_at=0, media_error=old["media_error"] if old else "")
                     records.append(record)
@@ -1100,7 +1108,7 @@ class Service:
         return {"count": len(public), "path": str(path)}
 
     def diagnostics(self):
-        return {"version": VERSION, "protocol": PROTOCOL, "schema": 4, "demo": self.demo,
+        return {"version": VERSION, "protocol": PROTOCOL, "schema": 5, "demo": self.demo,
                 "auth": self.auth, "connection": bool(self.client and self.client.is_connected()),
                 "archive_count": sum(c["count"] for c in self.store.conversations(self.account)),
                 "usage_bytes": self.store.usage(self.account), "quota_paused": self.quota_paused,

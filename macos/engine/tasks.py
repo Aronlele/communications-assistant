@@ -8,7 +8,7 @@ from engine.store import DEFAULTS
 
 def revision(rule):
     value = {key: value for key, value in {**DEFAULTS['rule'], 'priority': 0, **rule}.items()
-             if key not in ('automatic', 'armed_at', 'preview_validated', 'sample_text', 'name', 'id')}
+             if key not in ('automatic', 'armed_at', 'preview_validated', 'sample_text', 'sample_cases', 'name', 'id')}
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
