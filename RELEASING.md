@@ -10,15 +10,15 @@ bash scripts/test-native.sh
 TGA_RELEASE=1 TGA_OUTPUT_ROOT="$PWD/output/release-preview" bash macos/scripts/build.sh
 python3 macos/scripts/smoke.py output/release-preview/通讯助手.app/Contents/Resources/Engine/tgengine
 codesign --verify --deep --strict output/release-preview/通讯助手.app
-hdiutil verify output/release-preview/通讯助手-0.4.1-arm64.dmg
-python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.4.1-macOS-arm64.pkg output/release-preview/通讯助手.app
+hdiutil verify output/release-preview/通讯助手-0.4.2-arm64.dmg
+python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.4.2-macOS-arm64.pkg output/release-preview/通讯助手.app
 ```
 
 API 配置仅用于签名前生成资源，不加入 Git。发布说明须写明 TEST ONLY、临时签名、实际验证环境及待验收范围；正式产品 API 尚未就绪。
 
 构建默认生成 PKG、DMG、ZIP；PKG 是网站的首选入口。已有验收通过的应用可单独运行 `bash macos/scripts/package_installer.sh /绝对路径/通讯助手.app`，随后执行 `check_installer.py` 验证载荷与原应用一致，不需要重签应用或替换正在运行的副本。安装器没有安装脚本，不触碰用户资料、不下载依赖、不自动启动应用；系统安装器负责固定目录与升级检查。当前只生成未签名、未公证的测试安装器。
 
-提交 main，创建与包版本一致的 v0.4.1 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
+提交 main，创建与包版本一致的 v0.4.2 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
 
 对已有 v0.3.3 补充 PKG 时不移动标签、不重建 DMG/ZIP；保留原 `source_commit`，另记 `installer_commit`、`website_commit` 及实际验证范围。安装交付脚本以该提交为复现依据，不能假称原应用标签已含后补脚本。
 
@@ -53,3 +53,11 @@ python3 scripts/prepare_release.py --source output/macos-0.4.0-candidate --verif
 ## 0.4.1 独立构建与发布
 
 0.4.1 使用独立输出 `output/macos-0.4.1-candidate/` 完整构建，禁止覆盖正在运行的 `output/macos/通讯助手.app`。先用延迟 6 秒的独立演示引擎复现旧探测错误，再验证新探测、完整回归和新包。发布元数据不传入 0.4.0 的观察 summary，0.4.1 稳定性标记为 not_verified；0.4.0 的工作账号及观察继续运行，自动检查仍针对原版本。新版公开后不自动安装或重启本机应用。
+
+## 0.4.2 即讯与安装权限修复
+
+本版更名“即讯”（原通讯助手）。保留实际磁盘包名 `通讯助手.app`、bundle ID、PKG ID、可执行文件名、钥匙串服务与用户资料路径，确保安装器在原位置覆盖同一组件。显示名与本地化名称为“即讯”；不要仅为更名迁移数据或另装第二份应用。下载附件沿用 `CommunicationsAssistant-<版本>-macOS-arm64` 的稳定命名。
+
+使用独立输出 `output/macos-0.4.2-candidate/` 构建，不替换 `/Applications/通讯助手.app`。包内 API 配置需为 0644，以便 PKG 安装为 root 所有后普通用户可读；私有构建输入仍保持 0600。`check_installer.py` 必须逐项验证实际载荷对普通用户可读、目录可遍历、程序可执行；不可只比较文件字节和签名。
+
+本机实际运行 0.4.1 构建 14（安装权限已本地修复），其 72 小时观察为 2026-10-16 10:29 至预计 2026-10-19 10:29（北京时间），尚未通过。0.4.2 元数据不传入旧版 summary，标记 not_verified。提交、创建新标签并上传新版本；不得覆盖历史 v0.4.1 附件或将旧观察算作新版本通过。

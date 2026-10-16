@@ -250,7 +250,7 @@ struct TaskEditorView: View {
 struct TaskSendTestView: View {
     @EnvironmentObject var model: AppModel
     let rule: Object
-    @ViewState private var text = "通讯助手连接测试"
+    @ViewState private var text = "即讯连接测试"
     @ViewState private var show = false
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -421,7 +421,7 @@ struct SetupRecoveryView: View {
                         Text("恢复只作用于选中的原有任务；手动关闭的任务保持关闭，不补发旧提示。规则编辑后需重新验证和单独开启。").font(.caption).foregroundStyle(.secondary)
                     }
                     Panel(title: "5 · 后台运行与完成", icon: "menubar.rectangle") {
-                        Toggle("登录 Mac 时打开通讯助手", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLoginItem($0) }))
+                        Toggle("登录 Mac 时打开即讯", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLoginItem($0) }))
                         Text("账号和归档保存在本机，退出账号保留本地资料；备份不包含 Telegram 登录授权或 API 凭据。").font(.caption).foregroundStyle(.secondary)
                         Button("完成准备，查看概览") { model.request("setup_complete") { result in if result != nil { model.selection = .overview } } }.buttonStyle(.borderedProminent)
                         Text("可以暂不启用归档或自动回复，稍后随时回到此向导。").font(.caption).foregroundStyle(.secondary)

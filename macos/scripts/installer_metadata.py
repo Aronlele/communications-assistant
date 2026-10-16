@@ -10,7 +10,7 @@ def write_metadata(app, destination):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     identifier = 'local.communications.assistant'
     if info.get('CFBundleIdentifier') != identifier:
-        raise ValueError('应用标识不属于通讯助手，停止打包')
+        raise ValueError('应用标识不属于即讯，停止打包')
     if info.get('CFBundleExecutable') != 'CommunicationsAssistant' or not (app / 'Contents/MacOS/CommunicationsAssistant').is_file():
         raise ValueError('应用可执行文件缺失或不匹配')
     version, minimum = info.get('CFBundleShortVersionString'), info.get('LSMinimumSystemVersion')
@@ -24,7 +24,7 @@ def write_metadata(app, destination):
         'BundleIsVersionChecked': True, 'BundleHasStrictIdentifier': True,
         'BundleOverwriteAction': 'upgrade'}]))
     xml = ET.Element('installer-gui-script', minSpecVersion='2')
-    ET.SubElement(xml, 'title').text = '通讯助手 ' + version
+    ET.SubElement(xml, 'title').text = info['CFBundleDisplayName'] + ' ' + version
     for tag in ('welcome', 'readme', 'conclusion'):
         ET.SubElement(xml, tag, file=tag + '.html', **{'mime-type': 'text/html'})
     ET.SubElement(xml, 'options', customize='never', **{'require-scripts': 'false', 'hostArchitectures': 'arm64'})
@@ -32,7 +32,7 @@ def write_metadata(app, destination):
     check = ET.SubElement(xml, 'volume-check')
     ET.SubElement(ET.SubElement(check, 'allowed-os-versions'), 'os-version', min=minimum)
     ET.SubElement(ET.SubElement(xml, 'choices-outline'), 'line', choice='assistant')
-    choice = ET.SubElement(xml, 'choice', id='assistant', title='通讯助手', visible='false')
+    choice = ET.SubElement(xml, 'choice', id='assistant', title=info['CFBundleDisplayName'], visible='false')
     ET.SubElement(choice, 'pkg-ref', id=identifier + '.pkg')
     package = ET.SubElement(xml, 'pkg-ref', id=identifier + '.pkg', version=version, onConclusion='None')
     package.text = 'assistant.pkg'

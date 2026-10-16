@@ -1,8 +1,8 @@
 import platform
 import unicodedata
 
-VERSION = "0.4.1"
-DEFAULT_PROFILE = {"device_model": "通讯助手 macOS", "system_version": "macOS " + (platform.mac_ver()[0] or "14+"), "app_version": VERSION}
+VERSION = "0.4.2"
+DEFAULT_PROFILE = {"device_model": "即讯 macOS", "system_version": "macOS " + (platform.mac_ver()[0] or "14+"), "app_version": VERSION}
 
 
 def validate_profile(values):

@@ -8,10 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { [weak self] notification in
             Task { @MainActor in
-                guard let self, let window = notification.object as? NSWindow, window.title == "通讯助手",
+                guard let self, let window = notification.object as? NSWindow, window.title == "即讯",
                       let model = self.model, !model.isShuttingDown, !UserDefaults.standard.bool(forKey: "windowCloseExplained") else { return }
                 UserDefaults.standard.set(true, forKey: "windowCloseExplained")
-                let alert = NSAlert(); alert.messageText = "通讯助手会继续运行"
+                let alert = NSAlert(); alert.messageText = "即讯会继续运行"
                 alert.informativeText = "关闭窗口后，已开启的功能仍在菜单栏运行。点击纸飞机图标可以暂停或打开窗口；按 ⌘Q 或选择退出才会停止工作。此说明只显示一次。"
                 alert.addButton(withTitle: "知道了"); alert.runModal()
             }
@@ -34,7 +34,7 @@ struct CommunicationsApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = AppModel()
     var body: some Scene {
-        Window("通讯助手", id: "main") {
+        Window("即讯", id: "main") {
             MainView().environmentObject(model).onAppear { delegate.model = model }
         }
         .defaultSize(width: 1120, height: 760)
@@ -51,7 +51,7 @@ struct CommunicationsApp: App {
                 }
             }
         }
-        MenuBarExtra("通讯助手", systemImage: "paperplane") { MenuView().environmentObject(model) }
+        MenuBarExtra("即讯", systemImage: "paperplane") { MenuView().environmentObject(model) }
             .menuBarExtraStyle(.window)
     }
 }

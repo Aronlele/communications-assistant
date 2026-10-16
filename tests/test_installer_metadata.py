@@ -17,7 +17,7 @@ class InstallerMetadataTests(unittest.TestCase):
         (self.app / 'Contents/MacOS').mkdir(parents=True)
         (self.app / 'Contents/MacOS/CommunicationsAssistant').write_bytes(b'synthetic binary')
         self.info = {'CFBundleIdentifier': 'local.communications.assistant',
-                     'CFBundleExecutable': 'CommunicationsAssistant',
+                     'CFBundleExecutable': 'CommunicationsAssistant', 'CFBundleDisplayName': '即讯',
                      'CFBundleShortVersionString': '0.3.3', 'CFBundleVersion': '12',
                      'LSMinimumSystemVersion': '14.0'}
 
@@ -54,10 +54,13 @@ class InstallerMetadataTests(unittest.TestCase):
     def test_upgrade_is_nonrelocatable_and_closes_existing_app(self):
         self.generate()
         components = plistlib.loads((Path(self.folder.name) / 'components.plist').read_bytes())
+        self.assertEqual(components[0]['RootRelativeBundlePath'], '通讯助手.app')
         self.assertFalse(components[0]['BundleIsRelocatable'])
         self.assertTrue(components[0]['BundleIsVersionChecked'])
         self.assertEqual(components[0]['BundleOverwriteAction'], 'upgrade')
         xml = ET.parse(Path(self.folder.name) / 'Distribution.xml').getroot()
         self.assertEqual(xml.find('.//must-close/app').get('id'), self.info['CFBundleIdentifier'])
+        self.assertEqual(xml.find('title').text, '即讯 ' + self.info['CFBundleShortVersionString'])
+        self.assertEqual(xml.find('choice').get('title'), '即讯')
         self.assertEqual(xml.find('domains').get('enable_currentUserHome'), 'false')
         self.assertEqual(xml.find('options').get('require-scripts'), 'false')

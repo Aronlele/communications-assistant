@@ -19,9 +19,11 @@ class APIBuildTests(unittest.TestCase):
 
     def test_bundled_configuration_and_permissions(self):
         self.source.write_text(json.dumps({"api_id": 12345, "api_hash": "a" * 32, "unrelated": "discard"}))
+        self.source.chmod(0o600)
         self.assertTrue(configure(self.source, self.destination, release=True))
         self.assertEqual(json.loads(self.destination.read_text()), {"api_id": 12345, "api_hash": "a" * 32})
-        self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(self.source.stat().st_mode), 0o600)
 
     def test_missing_development_configuration_removes_previous_credentials(self):
         self.destination.parent.mkdir()

@@ -34,6 +34,7 @@ SDK="$(xcrun --sdk macosx --show-sdk-path)"
 xcrun swiftc -swift-version 5 -O -target arm64-apple-macos14.0 -sdk "$SDK" \
     "$PROJECT_ROOT/macos/Sources/APIConfiguration.swift" "$PROJECT_ROOT/macos/Sources/Model.swift" "$PROJECT_ROOT/macos/Sources/Views.swift" "$PROJECT_ROOT/macos/Sources/TaskViews.swift" "$PROJECT_ROOT/macos/Sources/App.swift" \
     -o "$STAGING/Contents/MacOS/CommunicationsAssistant"
+ditto "$PROJECT_ROOT/macos/Resources" "$STAGING/Contents/Resources"
 cp "$PROJECT_ROOT/macos/Info.plist" "$STAGING/Contents/Info.plist"
 cp "$PROJECT_ROOT/macos/README.md" "$STAGING/Contents/Resources/使用说明.md"
 "$BUILD_ROOT/venv/bin/python" "$PROJECT_ROOT/macos/scripts/licenses.py" "$STAGING/Contents/Resources/第三方许可.txt"
@@ -49,7 +50,7 @@ mkdir -p "$INSTALLER"
 rm -rf "$INSTALLER/通讯助手.app"
 ditto "$APP" "$INSTALLER/通讯助手.app"
 if [ ! -L "$INSTALLER/Applications" ]; then ln -s /Applications "$INSTALLER/Applications"; fi
-hdiutil create -ov -volname "通讯助手" -srcfolder "$INSTALLER" -format UDZO "$OUTPUT_ROOT/通讯助手-$PRODUCT_VERSION-arm64.dmg"
+hdiutil create -ov -volname "即讯" -srcfolder "$INSTALLER" -format UDZO "$OUTPUT_ROOT/通讯助手-$PRODUCT_VERSION-arm64.dmg"
 bash "$PROJECT_ROOT/macos/scripts/package_installer.sh" "$APP"
 python3 "$PROJECT_ROOT/macos/scripts/check_installer.py" "$OUTPUT_ROOT/CommunicationsAssistant-$PRODUCT_VERSION-macOS-arm64.pkg" "$APP"
 printf '%s\n' "$APP"

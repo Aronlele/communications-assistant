@@ -1,14 +1,14 @@
-# 通讯助手
+# 即讯
 
-<img src="docs/assets/icon.svg" alt="通讯助手图标" width="88">
+<img src="docs/assets/icon.svg" alt="即讯图标" width="88">
 
 原生 macOS Telegram 通讯工作台：多账号同时连接、消息提醒、本地聊天归档，以及用户明确配置的自动回复。
 
-当前发布 **0.4.1 测试版（构建 14）**，修复隔离探测的连接等待及演示原消息提示，保留多任务、任务结果、所有账号和准备与恢复向导。**0.4.1 尚未开展独立 72 小时观察**；本机工作应用仍为 0.4.0 构建 13，原账号和自动回复继续运行，其观察预计 2026-10-18 12:06（北京时间）结束，不能作为 0.4.1 的通过证据。公开仓库：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。安装包：[0.4.1 测试版下载](https://github.com/Aronlele/communications-assistant/releases/tag/v0.4.1)。产品展示页：[在线查看](https://aronlele.github.io/communications-assistant/)，源码位于 `docs/`；发布方式见 [发布说明](RELEASING.md)。仓库和安装包均可公开访问，无需 GitHub 登录。
+当前发布 **即讯 0.4.2 测试版（构建 15）**，原名“通讯助手”。修复 PKG 安装后内置 API 配置不可读的问题，统一应用界面、通知和安装向导名称；账号、任务和资料保持兼容。**0.4.2 尚未开展独立 72 小时观察**；本机继续运行已修复安装权限的 0.4.1 构建 14，1 个账号在线、1 个空入口，原固定回复任务开启，其独立观察从 2026-10-16 10:29 至预计 2026-10-19 10:29（北京时间），尚未通过，不能沿用为 0.4.2 的结论。源码：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。下载：[0.4.2 测试版](https://github.com/Aronlele/communications-assistant/releases/tag/v0.4.2)。展示页：[在线查看](https://aronlele.github.io/communications-assistant/)，源码位于 `docs/`；见 [发布说明](RELEASING.md)。仓库和安装包均可公开访问，无需 GitHub 登录。
 
 ## 安装与使用
 
-推荐从 Releases 下载 Apple Silicon 的 **PKG 安装向导**，双击后按“继续 → 安装”完成安装，再从“应用程序”打开“通讯助手”。系统可能要求管理员验证。安装器只替换应用，保留原有账号、归档、规则与账本；升级前请退出正在运行的应用。DMG/ZIP 保留为备用。
+推荐从 Releases 下载 Apple Silicon 的 **PKG 安装向导**，双击后按“继续 → 安装”完成安装，再从“应用程序”打开“即讯”。系统可能要求管理员验证。安装器只替换应用，保留原有账号、归档、规则与账本；升级前请退出正在运行的应用。DMG/ZIP 保留为备用。为原位升级，磁盘路径仍为 `/Applications/通讯助手.app`，资料目录及应用标识沿用旧值；界面和系统展示名为“即讯”。
 
 普通使用不需要 Python、Docker 或终端。当前仍为测试版：PKG 未签名、未公证，应用临时签名，内置官方 TEST ONLY API；正式 API、签名公证及干净 Mac 安装验收完成前，暂不面向普通用户正式推广。仅使用测试 API 不能作为正式发行方案。
 
@@ -34,7 +34,7 @@
 
 重启或身份恢复后，需要分别确认账号，再在恢复向导核对并恢复选中的原已开启任务；不补发重启前的旧提示。睡眠、合盖、退出和断网期间不能实时执行。备份未加密，不含登录会话和 API 凭据。
 
-本轮已通过 205 项 Python 回归、42 项原生状态检查，另验收延迟启动、隔离界面、打包引擎和安装包。工作账号未切换到 0.4.1，其真实升级与完整 72 小时仍待单独验收，详见[验收记录](design/acceptance.md)。发布附件提供 PKG、DMG、ZIP、中文使用说明和 SHA256。
+安装权限回归覆盖仅所有者可读资源、不可遍历目录和不可执行程序；发布前运行完整代码与原生检查，并验证实际 PKG 载荷权限、打包引擎和签名。0.4.2 未替换本机工作应用，真实升级与完整 72 小时仍待单独验收，详见[验收记录](design/acceptance.md)。发布附件提供 PKG、DMG、ZIP、中文使用说明和 SHA256。
 
 ## 从源码构建
 

@@ -114,7 +114,7 @@ struct MainView: View {
     var body: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 0) {
-                Label("通讯助手", systemImage: "paperplane.circle.fill")
+                Label("即讯", systemImage: "paperplane.circle.fill")
                     .font(.title2.weight(.semibold)).padding(20)
                 List(Destination.allCases, selection: $model.selection) { destination in
                     Label(destination.rawValue, systemImage: destination.icon).tag(destination)
@@ -814,7 +814,7 @@ struct SettingsView: View {
                     }
                     Button("删除当前账号的全部本地数据", role: .destructive) { eraseText = ""; showErase = true }
                 }
-                Text("通讯助手 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发构建") · 内部使用版 · Apple Silicon · 数据仅保存在本机")
+                Text("即讯 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发构建") · 内部使用版 · Apple Silicon · 数据仅保存在本机")
                     .font(.caption).foregroundStyle(.secondary)
             }.padding(28)
         }
@@ -967,7 +967,7 @@ struct MenuView: View {
             }
             Divider()
             Button("所有账号 · \(model.accountAttentionCount) 个需关注") { model.selection = .accounts; openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
-            Button("打开通讯助手") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+            Button("打开即讯") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
             if model.demo { Button("返回真实账号登录") { model.switchMode(false) } }
             if model.ready {
                 Button("暂停提醒 30 分钟") { model.control("pause_reminders") }
@@ -975,7 +975,7 @@ struct MenuView: View {
                 Button(model.settings.bool("pause_all") ? "恢复当前账号" : "暂停当前账号") { model.control(model.settings.bool("pause_all") ? "resume_all" : "pause_all") }
             }
             Divider()
-            Button("退出通讯助手") { NSApp.terminate(nil) }.keyboardShortcut("q")
+            Button("退出即讯") { NSApp.terminate(nil) }.keyboardShortcut("q")
         }.padding(18).frame(width: 310)
     }
 }

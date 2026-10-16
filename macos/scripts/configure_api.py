@@ -28,7 +28,9 @@ def configure(source, destination, release=False):
         raise ValueError("产品 API 配置无效；需要正整数 api_id 和 32 位十六进制 api_hash") from None
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps({"api_id": api_id, "api_hash": api_hash}) + "\n", encoding="utf-8")
-    os.chmod(destination, 0o600)
+    # Bundled client configuration must remain readable after a root-owned PKG install.
+    # The private build source and user Keychain credentials keep their own permissions.
+    os.chmod(destination, 0o644)
     return True
 
 

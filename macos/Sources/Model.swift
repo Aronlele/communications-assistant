@@ -85,7 +85,7 @@ final class EngineLink: @unchecked Sendable {
         intentional = false
         let executable = Bundle.main.resourceURL!.appendingPathComponent("Engine/tgengine")
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
-            throw NSError(domain: "通讯助手", code: 1, userInfo: [NSLocalizedDescriptionKey: "应用内的消息引擎缺失，请重新构建应用"])
+            throw NSError(domain: "即讯", code: 1, userInfo: [NSLocalizedDescriptionKey: "应用内的消息引擎缺失，请重新构建应用"])
         }
         socketPath = "/tmp/communications-\(getuid())-\(UUID().uuidString.prefix(8)).sock"
         let child = Process()
@@ -158,7 +158,7 @@ final class EngineLink: @unchecked Sendable {
         writing.lock()
         defer { writing.unlock() }
         guard let handle else {
-            throw NSError(domain: "通讯助手", code: 2, userInfo: [NSLocalizedDescriptionKey: "消息引擎正在启动，请稍后再试"])
+            throw NSError(domain: "即讯", code: 2, userInfo: [NSLocalizedDescriptionKey: "消息引擎正在启动，请稍后再试"])
         }
         var data = try JSONSerialization.data(withJSONObject: object)
         data.append(10)
@@ -635,7 +635,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         }
     }
     func backupData() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.zip]; panel.nameFieldStringValue = "通讯助手本地备份.zip"
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.zip]; panel.nameFieldStringValue = "即讯本地备份.zip"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         request("backup", ["path": url.path]) { [weak self] result in if result != nil { self?.info = "本地备份已保存；文件未加密，不包含登录会话或 API 凭据" } }
     }
@@ -677,7 +677,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         }
     }
     func exportDiagnostics() {
-        let panel = NSSavePanel(); panel.nameFieldStringValue = "通讯助手诊断.json"
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "即讯诊断.json"
         if panel.runModal() == .OK, let url = panel.url {
             do { try diagnostics.write(to: url, atomically: true, encoding: .utf8); info = "诊断已保存" }
             catch { self.error = error.localizedDescription }
@@ -695,8 +695,8 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] allowed, _ in
             Task { @MainActor in
                 self?.updateNotificationStatus()
-                if allowed { self?.notify(title: "通讯助手", body: "测试通知：系统已接收请求", identifier: "test") }
-                else { self?.error = "通知权限未开启，可前往系统设置 → 通知 → 通讯助手调整" }
+                if allowed { self?.notify(title: "即讯", body: "测试通知：系统已接收请求", identifier: "test") }
+                else { self?.error = "通知权限未开启，可前往系统设置 → 通知 → 即讯调整" }
             }
         }
     }
@@ -722,7 +722,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             enqueueVoice(name + "，" + text, slot: targetSlot, account: account)
         }
     }
-    func testVoice() { enqueueVoice("通讯助手语音测试，收到新的消息", slot: selectedSlot, account: Int64(state.number("account"))) }
+    func testVoice() { enqueueVoice("即讯语音测试，收到新的消息", slot: selectedSlot, account: Int64(state.number("account"))) }
     func enqueueVoice(_ text: String, slot: String, account: Int64) {
         if voiceQueue.count >= 50 { let dropped = voiceQueue.removeFirst(); skippedVoice[dropped.3, default: 0] += 1 }
         voiceQueue.append((text, Date(), account, slot))
@@ -830,7 +830,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     }
     func setPreventSleep(_ enabled: Bool, persist: Bool = true) {
         if enabled {
-            let result = IOPMAssertionCreateWithName(kIOPMAssertionTypeNoIdleSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "通讯助手在运行" as CFString, &powerAssertion)
+            let result = IOPMAssertionCreateWithName(kIOPMAssertionTypeNoIdleSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "即讯在运行" as CFString, &powerAssertion)
             preventSleep = result == kIOReturnSuccess
         } else {
             if powerAssertion != 0 { IOPMAssertionRelease(powerAssertion); powerAssertion = 0 }
@@ -859,7 +859,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     func showWindow() {
         openMain?()
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.contains("main") == true || $0.title == "通讯助手" }) {
+        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.contains("main") == true || $0.title == "即讯" }) {
             window.makeKeyAndOrderFront(nil)
         }
     }
