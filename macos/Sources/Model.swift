@@ -41,18 +41,18 @@ enum Destination: String, CaseIterable, Identifiable {
 
 enum Keychain {
     static let service = "local.communications.assistant.telegram"
-    static func read(slot: String = "legacy") -> String {
+    static func read(slot: String = "legacy", kind: String = "api_hash") -> String {
         let query: Object = [kSecClass as String: kSecClassGenericPassword,
-                             kSecAttrService as String: service, kSecAttrAccount as String: slot == "legacy" ? "api_hash" : "api_hash_" + slot,
+                             kSecAttrService as String: service, kSecAttrAccount as String: slot == "legacy" ? kind : kind + "_" + slot,
                              kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
               let data = result as? Data else { return "" }
         return String(data: data, encoding: .utf8) ?? ""
     }
-    static func save(_ value: String, slot: String = "legacy") throws {
+    static func save(_ value: String, slot: String = "legacy", kind: String = "api_hash") throws {
         let query: Object = [kSecClass as String: kSecClassGenericPassword,
-                             kSecAttrService as String: service, kSecAttrAccount as String: slot == "legacy" ? "api_hash" : "api_hash_" + slot]
+                             kSecAttrService as String: service, kSecAttrAccount as String: slot == "legacy" ? kind : kind + "_" + slot]
         let updateStatus = SecItemUpdate(query as CFDictionary, [kSecValueData as String: Data(value.utf8)] as CFDictionary)
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(updateStatus)) }
@@ -62,9 +62,9 @@ enum Keychain {
         let status = SecItemAdd(attributes as CFDictionary, nil)
         if status != errSecSuccess { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
     }
-    static func clear(slot: String = "legacy") throws {
+    static func clear(slot: String = "legacy", kind: String = "api_hash") throws {
         let status = SecItemDelete([kSecClass as String: kSecClassGenericPassword,
-                                   kSecAttrService as String: service, kSecAttrAccount as String: slot == "legacy" ? "api_hash" : "api_hash_" + slot] as CFDictionary)
+                                   kSecAttrService as String: service, kSecAttrAccount as String: slot == "legacy" ? kind : kind + "_" + slot] as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
         }
@@ -210,6 +210,12 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     @Published var diagnostics = ""
     @Published var showDiagnostics = false
     @Published var showIssues = false
+    @Published var showUpdates = false
+    @Published var preparingUpgrade = false
+    @Published var showRetainedAccounts = false
+    @Published var showBackupPassword = false
+    @Published var backupPasswordForRestore = false
+    var restorePassword = ""
     @Published var resultsAttention = false
     @Published var exportSummary = ""
     @Published var showExport = false
@@ -408,7 +414,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             if !demo && !restoredSlots.contains(slot) && ["disconnected", "offline"].contains(next.string("auth")) {
                 restoredSlots.insert(slot)
                 if next.string("auth") == "offline", let configuration = apiConfiguration(for: slot) {
-                    request("connect", ["api_id": Int(configuration.apiID), "api_hash": configuration.apiHash], slot: slot, background: true)
+                    request("connect", connectionArguments(configuration, slot: slot), slot: slot, background: true)
                 }
             }
             if next.string("auth") != "ready" || next.object("settings").bool("pause_all") || !next.object("settings").bool("reminders") || next.bool("quiet_active") || next.object("settings").number("paused_reminders_until") > Date().timeIntervalSince1970 || (previousSlotSettings.bool("voice") && !next.object("settings").bool("voice")) {
@@ -451,7 +457,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         let targetSlot = slot ?? selectedSlot
         if !background { activeRequests.insert(id) }
         if let completion { pending[id] = { [weak self] result in
-            guard self?.selectedSlot == targetSlot || ["select_account", "add_account", "remove_account"].contains(method) else { return }
+            guard self?.selectedSlot == targetSlot || ["select_account", "add_account", "remove_account", "restore_account_entry"].contains(method) else { return }
             completion(result)
         } }
         busy = !activeRequests.isEmpty
@@ -462,7 +468,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             self.error = error.localizedDescription
         }
         Task {
-            try? await Task.sleep(nanoseconds: 95_000_000_000)
+            try? await Task.sleep(nanoseconds: ["backup", "backup_preview", "restore_backup", "upgrade_prepare"].contains(method) ? 905_000_000_000 : 95_000_000_000)
             if activeRequests.remove(id) != nil {
                 busy = !activeRequests.isEmpty
                 error = "操作等待超时，请核对状态后再试"
@@ -487,7 +493,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         customAPI = !demo && apiSource == .custom ? apiConfiguration(for: slot) : nil
         contextGeneration += 1; configurationRevision += 1
         results = []; resultCount = 0; context = []; preview = [:]; diagnostics = ""
-        restorePreview = [:]; restorePath = ""; ledgerPreview = [:]; ledgerPath = ""
+        restorePreview = [:]; restorePath = ""; restorePassword = ""; showBackupPassword = false; showRetainedAccounts = false; ledgerPreview = [:]; ledgerPath = ""
         showIssues = false; resultsAttention = false
         showContext = false; showDiagnostics = false; showExport = false; showRestore = false; showLedger = false
         searchChat = "0"; query = ""; sender = ""; dateFilter = false
@@ -520,7 +526,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     func connect() {
         guard !demo, !busy else { return }
         guard let configuration = effectiveAPI else { error = missingAPIMessage; return }
-        request("connect", ["api_id": Int(configuration.apiID), "api_hash": configuration.apiHash])
+        request("connect", connectionArguments(configuration, slot: selectedSlot))
     }
 
     func saveAPIConfiguration(source: TelegramAPISource, apiID: String, apiHash: String) -> Bool {
@@ -639,17 +645,26 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             if result != nil { self?.info = "导出已保存"; NSWorkspace.shared.activateFileViewerSelecting([url]) }
         }
     }
-    func backupData() {
-        let panel = NSSavePanel(); panel.allowedContentTypes = [.zip]; panel.nameFieldStringValue = "即讯本地备份.zip"
+    func backupData(password: String = "") {
+        let panel = NSSavePanel(); panel.allowedContentTypes = password.isEmpty ? [.zip] : [UTType(filenameExtension: "jixunbackup") ?? .data]; panel.nameFieldStringValue = password.isEmpty ? "即讯本地备份.zip" : "即讯加密备份.jixunbackup"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        request("backup", ["path": url.path]) { [weak self] result in if result != nil { self?.info = "本地备份已保存；文件未加密，不包含登录会话或 API 凭据" } }
+        request("backup", ["path": url.path, "password": password]) { [weak self] result in if result != nil { self?.info = password.isEmpty ? "本地明文备份已保存，不包含登录会话或API凭据" : "加密备份已保存；密码未保存，请妥善保管" } }
     }
     func chooseBackup() {
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip]; panel.allowsMultipleSelection = false
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip, UTType(filenameExtension: "jixunbackup") ?? .data]; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        restorePath = url.path; restorePreview = [:]
-        request("backup_preview", ["path": url.path]) { [weak self] result in
-            guard let self, let result else { return }
+        restorePath = url.path; restorePreview = [:]; restorePassword = ""
+        do {
+            let input = try FileHandle(forReadingFrom: url); defer { try? input.close() }
+            if try input.read(upToCount: 8) == Data("JIXUNB1\n".utf8) {
+                backupPasswordForRestore = true; showBackupPassword = true
+            } else { previewBackup() }
+        } catch { self.error = "无法读取备份文件" }
+    }
+    func previewBackup() {
+        request("backup_preview", ["path": restorePath, "password": restorePassword]) { [weak self] result in
+            guard let self else { return }
+            guard let result else { restorePassword = ""; return }
             restorePreview = result; showRestore = true
         }
     }
@@ -668,8 +683,10 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         }
     }
     func restoreBackup() {
-        request("restore_backup", ["path": restorePath, "confirmed_account": Int64(state.number("account")), "digest": restorePreview.string("digest")]) { [weak self] result in
-            guard let self, result != nil else { return }
+        request("restore_backup", ["path": restorePath, "confirmed_account": Int64(state.number("account")), "digest": restorePreview.string("digest"), "password": restorePassword]) { [weak self] result in
+            guard let self else { return }
+            restorePassword = ""
+            guard result != nil else { return }
             configurationRevision += 1
             info = "恢复完成，记录和发送账本已合并；自动回复与在线策略已关闭，请核对设置"; search()
         }

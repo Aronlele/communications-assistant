@@ -52,6 +52,10 @@ def main():
             output = Path(folder) / "export.json"
             result = command("export", {"path": str(output), "query": "项目"})
             assert result["count"] == 3 and output.exists()
+            mismatch = command('task_draft_preview', {'draft': {'mode':'fixed','match_text':'提示\n请回复','reply_text':'1'}, 'text':'提示\n请 回复'})
+            assert not mismatch['recognized'] and mismatch['line'] == 2 and mismatch['column'] == 2
+            assert mismatch['explanation']
+            assert command('retained_accounts')['rows'] == []
             diagnostics = command("diagnostics")
             assert "identity" not in diagnostics and "keyword" not in diagnostics
             backup = Path(folder) / 'sample.tgabackup'
@@ -60,6 +64,11 @@ def main():
             preview = command('backup_preview', {'path': str(backup)})
             assert preview['counts']['messages'] == 9
             command('restore_backup', {'path': str(backup), 'confirmed_account': 999001, 'digest': preview['digest']})
+            encrypted = Path(folder)/'sample.jixunbackup'
+            command('backup', {'path':str(encrypted),'password':'synthetic-backup-password'})
+            encrypted_preview = command('backup_preview', {'path':str(encrypted),'password':'synthetic-backup-password'})
+            assert encrypted_preview['encrypted'] and encrypted_preview['counts']['messages'] == 9
+            command('restore_backup', {'path':str(encrypted),'password':'synthetic-backup-password','confirmed_account':999001,'digest':encrypted_preview['digest']})
             state = command('state')
             assert not state['settings']['rule']['automatic'] and not state['settings']['online']
             assert command('search')['count'] == 9
@@ -124,7 +133,7 @@ def main():
             process.wait(timeout=10)
             assert process.returncode == 0
             assert not Path(address).exists()
-            print("Packaged engine: IPC, account isolation, multi-task save/preview/delete, sample persistence, results, setup, search, pause, backup/export, local cleanup, copying/templates, multi-case validation, issue actions and shutdown passed")
+            print("Packaged engine: IPC, account isolation, multi-task save/preview/delete, sample persistence, results, setup, search, pause, backup/export, local cleanup, copying/templates, multi-case validation, issue actions, match explanations, retained account discovery, encrypted backup/restore and shutdown passed")
         finally:
             if process.poll() is None:
                 process.terminate()

@@ -22,7 +22,7 @@ def main():
         fixture = root / 'Model.swift'
         fixture.write_text(model.replace(constructor, '        updateNotificationStatus()', 1))
         subprocess.run(['xcrun', 'swiftc', '-swift-version', '5',
-                        str(project / 'macos/Sources/APIConfiguration.swift'), str(fixture),
+                        str(project / 'macos/Sources/APIConfiguration.swift'), str(project / 'macos/Sources/ProductServices.swift'), str(project / 'macos/Sources/ProductReadinessViews.swift'), str(fixture),
                         str(project / 'macos/Sources/Views.swift'), str(project / 'macos/Sources/WorkbenchViews.swift'), str(project / 'macos/Sources/TaskViews.swift'),
                         str(project / 'macos/tests/RecoveryProbe.swift'), '-o', str(binary)], check=True)
         subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)

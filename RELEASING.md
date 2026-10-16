@@ -10,15 +10,15 @@ bash scripts/test-native.sh
 TGA_RELEASE=1 TGA_OUTPUT_ROOT="$PWD/output/release-preview" bash macos/scripts/build.sh
 python3 macos/scripts/smoke.py output/release-preview/通讯助手.app/Contents/Resources/Engine/tgengine
 codesign --verify --deep --strict output/release-preview/通讯助手.app
-hdiutil verify output/release-preview/通讯助手-0.5.0-arm64.dmg
-python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.5.0-macOS-arm64.pkg output/release-preview/通讯助手.app
+hdiutil verify output/release-preview/通讯助手-0.6.0-arm64.dmg
+python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.6.0-macOS-arm64.pkg output/release-preview/通讯助手.app
 ```
 
 API 配置仅用于签名前生成资源，不加入 Git。发布说明须写明 TEST ONLY、临时签名、实际验证环境及待验收范围；正式产品 API 尚未就绪。
 
 构建默认生成 PKG、DMG、ZIP；PKG 是网站的首选入口。已有验收通过的应用可单独运行 `bash macos/scripts/package_installer.sh /绝对路径/通讯助手.app`，随后执行 `check_installer.py` 验证载荷与原应用一致，不需要重签应用或替换正在运行的副本。安装器没有安装脚本，不触碰用户资料、不下载依赖、不自动启动应用；系统安装器负责固定目录与升级检查。当前只生成未签名、未公证的测试安装器。
 
-提交 main，创建与包版本一致的 v0.5.0 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
+提交 main，创建与包版本一致的 v0.6.0 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
 
 对已有 v0.3.3 补充 PKG 时不移动标签、不重建 DMG/ZIP；保留原 `source_commit`，另记 `installer_commit`、`website_commit` 及实际验证范围。安装交付脚本以该提交为复现依据，不能假称原应用标签已含后补脚本。
 
@@ -67,3 +67,10 @@ python3 scripts/prepare_release.py --source output/macos-0.4.0-candidate --verif
 使用独立输出目录构建，发布前同步使用说明并重新打包，确保包内帮助与功能一致。上传 PKG、DMG、ZIP、使用说明、离线展示页、校验清单和脱敏元数据；校验公开附件后再部署 Pages。
 
 本次用户授权同时升级本机。先记录并停止 0.4.2 观察，再正常退出、完整备份资料和旧应用，通过 PKG 原位安装；新引擎升级 schema 5，逐账号确认并恢复原先已开启的任务，逐字段比对配置，仅允许启用时间及恢复意图字段变化。恢复正常后启动独立 72 小时观察并更新原自动复查，不合并旧版时长。升级备份含本机敏感资料，仅存本机，不上传。旧版不能直接打开 schema 5，回退须同时恢复完整升级前资料。
+
+
+## 0.6.0发布与保留资料升级
+
+独立发行目录`output/macos-0.6.0-release/`包含最新包内帮助。先完成237项Python、77项原生及实际冻结引擎、安装包载荷/权限/完整性检查。用户本次另行授权升级：结束0.5.0观察，正常退出并完整备份资料、旧应用和偏好，经系统PKG安装后按原启用集合恢复两个账号的两条任务。工作数据库仍schema5，比较配置只允许重新启用时间变化。0.6.0观察从2026-10-16 15:56:06至预计2026-10-19 15:56:06（北京时间），尚未通过；0.5.0的3.518小时不合并。
+
+源码提交及v0.6.0标签与实际应用代码一致，发布元数据仅摘取脱敏检查和本版观察起止时间；不上传完整备份、工作资料、原始升级报告或观察样本。公开附件校验后再手动部署Pages。

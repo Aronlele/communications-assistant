@@ -8,3 +8,4 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 "$TEST_PYTHON" macos/scripts/native_accounts_probe.py
 "$TEST_PYTHON" macos/scripts/native_recovery_probe.py
+"$TEST_PYTHON" macos/scripts/native_product_probe.py

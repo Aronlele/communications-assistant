@@ -11,6 +11,7 @@ from engine.reply_rule import parse_reply, template_from_sample, validate_templa
 from engine.task_templates import validate_cases, evaluate_cases, builtin_templates, import_template, FIELDS
 from engine.schedule import validate
 from engine.store import DEFAULTS
+from engine.match_explanation import explain
 from engine.tasks import forget_resume, rules, task_rule, revision
 
 
@@ -67,7 +68,7 @@ async def command(service, method, args):
         text = args.get('text', '')
         validate_template(dict(draft, sample_text=text))
         prompt = parse_reply(text, draft, 1)
-        return {'recognized': bool(prompt), 'reply_mode': draft['mode'], **(vars(prompt) if prompt else {})}
+        return {'recognized': bool(prompt), 'reply_mode': draft['mode'], **explain(text, draft), **(vars(prompt) if prompt else {})}
     if method == 'task_results':
         status = args.get('status', '')
         if status not in ('', 'attention', 'sending', 'sent', 'sent_unverified', 'confirmed', 'send_unknown', 'expired', 'skipped', 'reminder'):
@@ -150,7 +151,7 @@ async def command(service, method, args):
             rule.update(sample_text=text, preview_validated=bool(prompt) and (suite is None or suite['passed']))
             service.store.save_settings(service.account, cfg)
             await service.publish()
-            return {'recognized': bool(prompt), 'suite_passed': suite['passed'] if suite else True, 'reply_mode': rule['mode'], **(vars(prompt) if prompt else {})}
+            return {'recognized': bool(prompt), 'suite_passed': suite['passed'] if suite else True, 'reply_mode': rule['mode'], **explain(text, rule), **(vars(prompt) if prompt else {})}
         if method == 'task_delete':
             if args.get('confirmed_id') != identifier:
                 raise ValueError('请确认要删除的任务')

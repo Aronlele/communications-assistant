@@ -77,7 +77,16 @@ def media_path(root, account, value):
     return path
 
 
-def create_backup(root, account, destination):
+def create_backup(root, account, destination, password=""):
+    if password:
+        from engine.encrypted_backup import encrypt
+        if Path(destination).resolve().is_relative_to(Path(root).resolve()):
+            raise ValueError("备份请保存到应用数据目录之外")
+        with tempfile.TemporaryDirectory(prefix="jixun-backup-encrypt-") as temporary:
+            plain = Path(temporary) / "business.zip"
+            counts = create_backup(root, account, plain)
+            encrypt(plain, destination, password)
+            return counts
     root, destination = Path(root), Path(destination)
     if destination.resolve().is_relative_to(root.resolve()):
         raise ValueError('备份请保存到应用数据目录之外')
@@ -123,7 +132,22 @@ def create_backup(root, account, destination):
     return counts
 
 
-def inspect_backup(path, account, folder=None, metadata_only=False):
+def inspect_backup(path, account, folder=None, metadata_only=False, password=""):
+    try:
+        return _inspect_backup(path, account, folder, metadata_only, password)
+    except (sqlite3.Error, zipfile.BadZipFile, OSError):
+        raise ValueError("备份无法读取、空间不足或结构无效，现有资料未更改") from None
+
+
+def _inspect_backup(path, account, folder=None, metadata_only=False, password=""):
+    from engine.encrypted_backup import is_encrypted, decrypt
+    if is_encrypted(path):
+        if not password: raise ValueError("此备份已加密，请输入备份密码")
+        with tempfile.TemporaryDirectory(prefix="jixun-backup-decrypt-") as temporary:
+            plain = Path(temporary) / "business.zip"
+            digest = decrypt(path, plain, password)
+            manifest = inspect_backup(plain, account, folder, metadata_only)
+            return dict(manifest, digest=digest, encrypted=True)
     if folder is None:
         with tempfile.TemporaryDirectory(prefix='tga-backup-preview-') as temporary:
             return inspect_backup(path, account, temporary, metadata_only=True)

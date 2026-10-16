@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CryptoKit
 
 @main
 struct AccountsProbe {
@@ -15,7 +16,9 @@ struct AccountsProbe {
               "account": slot == "legacy" ? 101 : 202, "identity": ["name": slot == "legacy" ? "第一账号" : "第二账号"],
               "auth": "ready", "connected": true, "settings": ["reminders": true]]]
         }
+        var checks = 0
         func check(_ condition: Bool, _ text: String) {
+            checks += 1
             guard condition else { print("FAIL: " + text); exit(1) }
         }
         model.receive(state("legacy"))
@@ -93,7 +96,59 @@ struct AccountsProbe {
         model.receive(["event": "state", "data": ["slot": "legacy", "active_slot": "legacy",
             "accounts": [["slot": "legacy", "auth": "disconnected"]], "auth": "disconnected"]])
         check(!model.canRemoveAccount, "至少保留一个登录入口")
-        print("Native multi-account state: 33 checks passed")
+        model.restorePassword = "synthetic-backup-password"
+        model.showBackupPassword = true
+        model.selectLocalSlot(second)
+        check(model.restorePassword.isEmpty && !model.showBackupPassword, "切换账号清除备份密码")
+        model.demo = true
+        let proxy: Object = ["mode": "socks5", "host": "localhost", "port": 1080, "requires_password": false]
+        let proxyArgs = model.proxyArguments(for: second, configuration: proxy)
+        check(proxyArgs.string("mode") == "socks5" && proxyArgs["password"] == nil, "代理不需要认证时不读取或转发密码")
+        check(ReleasePolicy.parts("0.6.0") == [0,6,0], "更新版本按数字比较")
+        check(ReleasePolicy.parts("1.2.3;run") == nil && ReleasePolicy.parts("01.2.3") == nil, "拒绝不合法更新版本")
+        let digest = String(repeating: "a", count: 64)
+        func release(_ version: String, testing: Bool = true) -> Object {
+            let tag = "v" + version
+            let name = "CommunicationsAssistant-\(version)-macOS-arm64.pkg"
+            return ["tag_name": tag, "draft": false, "prerelease": testing,
+                    "html_url": ReleasePolicy.base + "/releases/tag/" + tag,
+                    "assets": [["name": name, "state": "uploaded", "size": 12,
+                                "browser_download_url": ReleasePolicy.base + "/releases/download/\(tag)/\(name)", "digest": "sha256:" + digest]]]
+        }
+        func offer(_ rows: [Object], tests: Bool = true) -> UpdateOffer? { try? ReleasePolicy.offer(rows, current: "0.6.0", includeTests: tests) }
+        check(offer([release("0.5.0")]) == nil, "拒绝降级")
+        check(offer([release("0.7.0")], tests: false) == nil, "正式渠道不混入测试包")
+        check(offer([release("0.7.0"),release("0.10.0")])?.version == "0.10.0", "选择最高数字版本")
+        var bad = release("0.7.0"); bad["draft"] = true
+        check(offer([bad]) == nil, "拒绝草稿发行")
+        bad = release("0.7.0"); bad["html_url"] = "https://example.invalid/release"
+        check(offer([bad]) == nil, "拒绝其他仓库或来源")
+        for field in ["digest", "browser_download_url", "name", "state"] {
+            bad = release("0.7.0"); var assets = bad.rows("assets"); assets[0][field] = "invalid"; bad["assets"] = assets
+            check(offer([bad]) == nil, "拒绝无效安装附件字段：" + field)
+        }
+        bad = release("0.7.0"); bad["assets"] = bad.rows("assets") + bad.rows("assets")
+        check(offer([bad]) == nil, "拒绝重复同名安装器")
+        check(UpdateRedirectPolicy.allowed(URL(string: "https://release-assets.githubusercontent.com/asset")), "只允许官方附件重定向")
+        for url in ["http://github.com/a", "https://evil.invalid/a", "https://user:pass@github.com/a", "https://github.com:444/a"] {
+            check(!UpdateRedirectPolicy.allowed(URL(string: url)), "拒绝不安全重定向")
+        }
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let file = temporary.appendingPathComponent("synthetic.pkg"); let data = Data("synthetic-package".utf8)
+        try! data.write(to: file)
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let valid = UpdateOffer(version: "0.7.0", url: URL(string: "https://github.com")!, page: URL(string: "https://github.com")!, sha256: hash, size: Int64(data.count), notes: "", prerelease: true)
+        do { try ReleasePolicy.verify(file, offer: valid); check(true, "有效安装包通过校验") } catch { check(false, "有效包应通过完整校验") }
+        try! Data(repeating: 0, count: data.count).write(to: file)
+        do { try ReleasePolicy.verify(file, offer: valid); check(false, "篡改包必须拒绝") } catch { check(error.localizedDescription.contains("SHA256"), "同长度篡改由SHA256拒绝") }
+        try! Data([0]).write(to: file)
+        do { try ReleasePolicy.verify(file, offer: valid); check(false, "截断包必须拒绝") } catch { check(error.localizedDescription.contains("长度"), "截断文件由长度拒绝") }
+        check(FileManager.default.fileExists(atPath: file.path), "校验失败不删除其他文件或修改应用")
+        model.prepareUpgrade(file, offer: valid, allowUnsigned: true)
+        check(model.error.contains("不能替换"), "演示模式不能升级工作应用")
+        print("Native multi-account and readiness state: \(checks) checks passed")
         exit(0)
     }
 }

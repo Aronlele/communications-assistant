@@ -99,6 +99,7 @@ struct SampleSuiteResult: View {
             ForEach(value.rows("rows"), id: \.caseIndex) { row in
                 Text("样例 \(Int(row.number("index"))+1)：\(row.bool("passed") ? "通过" : "未通过") · 实际\(row.bool("recognized") ? "匹配" : "未匹配")\(row.string("reply").isEmpty ? "" : " · 回复：" + row.string("reply"))")
                     .font(.caption).textSelection(.enabled)
+                if !row.bool("passed") { Text(row.string("explanation")).font(.caption).foregroundStyle(.orange) }
             }
         }
     }

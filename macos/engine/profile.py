@@ -1,7 +1,7 @@
 import platform
 import unicodedata
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 DEFAULT_PROFILE = {"device_model": "即讯 macOS", "system_version": "macOS " + (platform.mac_ver()[0] or "14+"), "app_version": VERSION}
 
 

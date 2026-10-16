@@ -1,6 +1,6 @@
 # 来源与第三方组件
 
-产品使用 Python、Telethon、pyaes、rsa、pyasn1 及打包工具 PyInstaller。固定版本见 macos/requirements-build.txt。构建脚本从实际 distribution 收集第三方及 Python 许可证，随包“第三方许可.txt”交付。
+产品使用 Python、Telethon、pyaes、rsa、pyasn1 、cryptography、cffi、pycparser、python-socks 及打包工具 PyInstaller。固定版本见 macos/requirements-build.txt。构建脚本从实际 distribution 收集第三方及 Python 许可证，随包“第三方许可.txt”交付。
 
 - Python：https://docs.python.org/3/license.html
 - Telethon：https://github.com/LonamiWebs/Telethon

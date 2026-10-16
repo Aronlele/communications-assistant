@@ -163,6 +163,7 @@ struct MainView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity).id(model.selectedSlot)
         }
         .frame(minWidth: 960, minHeight: 640)
+        .disabled(model.preparingUpgrade)
         .onAppear { model.openMain = { openWindow(id: "main") } }
         .toolbar {
             Button("处理异常", systemImage: "exclamationmark.bubble") { model.showIssues = true }
@@ -174,6 +175,9 @@ struct MainView: View {
             }
         }
         .sheet(isPresented: $model.showIssues) { IssueCenterView() }
+        .sheet(isPresented: $model.showUpdates) { ProductUpdateView() }
+        .sheet(isPresented: $model.showRetainedAccounts) { RetainedAccountsView() }
+        .sheet(isPresented: $model.showBackupPassword) { BackupPasswordView() }
         .sheet(isPresented: $model.showDiagnostics) { DiagnosticsView() }
         .sheet(isPresented: $model.showContext) { ContextView() }
         .alert("导出聊天记录", isPresented: $model.showExport) {
@@ -269,6 +273,9 @@ struct LoginSettingsView: View {
                     Button("返回登录") { model.selection = .overview }
                 }
                 DisclosureGroup("高级设置", isExpanded: $model.showAdvancedAPI) {
+                    NetworkSettingsView()
+                    Button("恢复保留的账号资料…") { model.showRetainedAccounts = true }
+                    Button("检查更新…") { model.showUpdates = true }
                     APISettingsView().padding(.top, 12)
                     DeviceProfileView().padding(.top, 12)
                 }
@@ -774,6 +781,11 @@ struct SettingsView: View {
                     Button("退出当前账号") { showLogout = true }.disabled(model.demo)
                     if model.demo { Button("返回真实账号登录") { model.switchMode(false) } }
                 }
+                Panel(title: "产品更新与账号资料", icon: "arrow.triangle.2.circlepath") {
+                    Button("检查更新与安全升级…") { model.showUpdates = true }
+                    Button("恢复保留的账号资料…") { model.showRetainedAccounts = true }
+                }
+                NetworkSettingsView()
                 Panel(title: "运行方式", icon: "menubar.rectangle") {
                     Toggle("登录 Mac 后启动", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLoginItem($0) }))
                     Toggle("运行时阻止空闲睡眠", isOn: Binding(get: { model.preventSleep }, set: { model.setPreventSleep($0) }))
@@ -825,10 +837,11 @@ struct SettingsView: View {
                         Button("预览诊断报告") { model.diagnosticPreview() }
                     }
                     HStack {
-                        Button("备份本地数据与配置") { model.backupData() }
+                        Button("明文备份…") { model.backupData() }
+                        Button("加密备份…") { model.backupPasswordForRestore = false; model.showBackupPassword = true }
                         Button("预览并恢复备份") { model.chooseBackup() }
                     }.disabled(model.busy)
-                    Text("备份未加密，包含当前账号的归档、图片、设置和发送账本，不包含登录会话或 API 凭据。恢复会合并已有记录，保留去重账本，并关闭自动回复和在线策略。")
+                    Text("可选择明文ZIP或密码加密备份，包含当前账号的归档、图片、设置与发送账本，不包含登录会话、API或代理密码。密码不会保存，遗失无法恢复。正确恢复会合并记录、保留去重账本，并关闭自动回复与在线策略。")
                         .font(.caption).foregroundStyle(.secondary)
                     Divider()
                     HStack {
@@ -851,7 +864,7 @@ struct SettingsView: View {
             Button("退出账号", role: .destructive) { model.logout() }
         } message: { Text("仅停止当前账号并尝试撤销它的远端会话，已有归档保留，其他账号继续运行。若撤销未确认，请在 Telegram 设备管理中核对。") }
         .alert("恢复当前账号的备份", isPresented: $model.showRestore) {
-            Button("取消", role: .cancel) { }
+            Button("取消", role: .cancel) { model.restorePassword = "" }
             Button("确认合并并恢复") { model.restoreBackup() }
         } message: {
             Text("当前账号：\(model.accountName)。备份包含 \(Int(model.restorePreview.object("counts").number("messages"))) 条消息、\(Int(model.restorePreview.object("counts").number("executions"))) 条发送记录。合并归档与账本，保留现有消息版本；按备份恢复配置，自动回复与在线策略关闭。")

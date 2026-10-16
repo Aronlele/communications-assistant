@@ -20,6 +20,7 @@ from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneCod
 
 from engine.archive_cleanup import command as archive_cleanup_command
 from engine.issues import issues
+from engine.network import command as network_command, configuration as proxy_configuration, telethon_proxy
 from engine.automation import Automation
 from engine.importer import read_legacy, legacy_image, read_legacy_ledger
 from engine.schedule import active, intervals, validate
@@ -92,6 +93,8 @@ class Service:
             {'key': 'TW:886', 'name': '中国台湾 +886', 'code': '886'}, {'key': 'US:1', 'name': '美国 +1', 'code': '1'},
             {'key': 'SG:65', 'name': '新加坡 +65', 'code': '65'}, {'key': 'MY:60', 'name': '马来西亚 +60', 'code': '60'},
             {'key': 'VN:84', 'name': '越南 +84', 'code': '84'}, {'key': 'TH:66', 'name': '泰国 +66', 'code': '66'}]
+        self.active_proxy = None
+        self.connection_proxy = {}
         self.media_retry_task = None
         self.syncing_chats = set()
         cached_account = int(self.store.preference("last_account") or 0)
@@ -151,6 +154,8 @@ class Service:
         next_intervals = intervals(cfg["weekly"], cfg["timezone"])
         return {
             "protocol": PROTOCOL, "auth": self.auth, "issues": issues(self),
+            "network_proxy": proxy_configuration(json.loads(self.store.preference("network_proxy") or "{}")),
+            "active_proxy": self.active_proxy or {},
             "device_profile": self.device_profile, "active_profile": self.active_profile or {}, "code_resend_at": self.code_resend_at,
             "server_profile": self.server_profile,
             "countries": self.countries,
@@ -214,6 +219,8 @@ class Service:
             method, args = "send_code", {"phone": self.phone}
         if method == "state":
             return self.state()
+        if method.startswith("network_"):
+            return await network_command(self, method, args)
         if method == "connect":
             return await self.connect(args)
         if method in ("device_profile", "apply_device_profile"):
@@ -232,7 +239,7 @@ class Service:
                 disarm_all(cfg, remember=True)
                 self.store.save_settings(self.account, cfg)
                 self.auth = "offline"
-                return await self.connect({"api_id": api_id, "api_hash": api_hash})
+                return await self.connect({"api_id": api_id, "api_hash": api_hash, "proxy": self.connection_proxy})
             await self.publish()
             return self.state()
         if method == "cancel_login":
@@ -319,37 +326,41 @@ class Service:
                 if args.get("account") == self.account:
                     await self.activity("voice", {"queued": "语音提醒已加入播放队列", "playing": "语音开始播报", "completed": "语音播报完成", "cancelled": "语音播报已取消", "failed": "语音播报未完成", "skipped": "较早的语音提醒已合并为摘要"}[result])
             elif method == "backup":
-                counts = await asyncio.to_thread(create_backup, self.root, self.account, args["path"])
+                try:
+                    counts = await asyncio.to_thread(create_backup, self.root, self.account, args["path"], args.get("password", ""))
+                except OSError:
+                    raise ValueError('备份未保存，请检查保存位置、权限与空间；现有任务未改动') from None
                 await self.activity("backup", "本地备份已保存，不包含登录会话和 API 凭据")
                 return counts
             elif method == "backup_preview":
-                return await asyncio.to_thread(inspect_backup, args["path"], self.account)
+                return await asyncio.to_thread(inspect_backup, args["path"], self.account, password=args.get("password", ""))
             elif method == "restore_backup":
                 if int(args.get("confirmed_account", 0)) != self.account:
                     raise ValueError("请确认备份属于当前账号")
                 if self.send_jobs:
                     raise ValueError("发送仍在进行，请等待完成后恢复备份")
                 account, generation = self.account, self.generation
-                original = self.settings(); blocked = dict(original, pause_sends=True)
-                self.store.save_settings(account, blocked)
-                await self.publish()
-                restored = False
-                try:
-                    with tempfile.TemporaryDirectory(prefix='tga-restore-') as folder:
-                        manifest = await asyncio.to_thread(inspect_backup, args["path"], account, folder)
-                        if args.get('digest') != manifest['digest']:
-                            raise ValueError("备份在预览后已变化，请重新预览并确认")
-                        if self.account != account or self.generation != generation:
-                            raise ValueError("账号连接已变化，请重新核对后恢复")
+                # 先解密和验证，再暂停实际恢复。错误密码、文件变化不触碰工作配置。
+                with tempfile.TemporaryDirectory(prefix='tga-restore-') as folder:
+                    manifest = await asyncio.to_thread(inspect_backup, args["path"], account, folder, password=args.get("password", ""))
+                    if args.get('digest') != manifest['digest']:
+                        raise ValueError("备份在预览后已变化，请重新预览并确认")
+                    if self.account != account or self.generation != generation:
+                        raise ValueError("账号连接已变化，请重新核对后恢复")
+                    if self.send_jobs: raise ValueError("发送仍在进行，请等待完成后恢复备份")
+                    original = self.settings()
+                    self.store.save_settings(account, dict(original, pause_sends=True))
+                    restored = False
+                    try:
+                        await self.publish()
                         counts = restore_backup(self.store, account, folder, manifest)
                         restored = True
                         self.device_profile = validate_profile(manifest.get('device_profile', {}))
-                    await self.publish()
-                    return counts
-                except Exception:
-                    if not restored:
-                        self.store.save_settings(account, original)
-                    raise
+                        await self.publish()
+                        return counts
+                    except Exception:
+                        if not restored: self.store.save_settings(account, original)
+                        raise
             elif method == "control":
                 await self.control(args["action"])
             elif method == "rule":
@@ -550,6 +561,8 @@ class Service:
             return self.state()
         if self.auth == "ready":
             raise ValueError("更换账号前请先退出当前账号")
+        proxy = args.get("proxy", json.loads(self.store.preference("network_proxy") or "{}"))
+        connection_proxy = telethon_proxy(proxy)
         cached_account, cached_identity = self.account, self.identity
         self.clear_notices()
         if self.client:
@@ -566,9 +579,11 @@ class Service:
             self.auth = "disconnected"
             raise ValueError("API ID 应为正整数，API Hash 应为 32 位十六进制字符串")
         self.client = TelegramClient(str(self.root / "telegram"), api_id, api_hash,
-                                     **self.device_profile,
+                                     **self.device_profile, proxy=connection_proxy,
                                      request_retries=1, connection_retries=5, retry_delay=2,
                                      flood_sleep_threshold=0, timeout=20)
+        self.connection_proxy = dict(proxy)
+        self.active_proxy = proxy_configuration(proxy)
         self.active_profile = dict(self.device_profile)
         self.client.add_event_handler(self.new_message, events.NewMessage())
         self.client.add_event_handler(self.edited_message, events.MessageEdited())

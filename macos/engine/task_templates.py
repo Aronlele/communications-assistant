@@ -3,6 +3,7 @@ import unicodedata
 from engine.reply_rule import parse_reply, validate_template
 from engine.schedule import validate
 from engine.store import DEFAULTS
+from engine.match_explanation import explain
 
 FIELDS = ('name', 'mode', 'match_text', 'match_mode', 'reply_text', 'valid_minutes', 'prompt_template',
           'sample_text', 'sample_cases', 'priority', 'sending_limited', 'sending_weekly', 'sending_timezone')
@@ -31,7 +32,8 @@ def evaluate_cases(rule, cases):
         prompt = parse_reply(case['text'], rule, 1)
         passed = bool(prompt) == case['should_match'] and (not prompt or not case['expected_reply'] or prompt.keyword == case['expected_reply'])
         rows.append({'index': index, 'recognized': bool(prompt), 'should_match': case['should_match'],
-                     'reply': prompt.keyword if prompt else '', 'passed': passed})
+                     'reply': prompt.keyword if prompt else '', 'passed': passed,
+                     'explanation': '实际回复与预期回复不同' if prompt and case['expected_reply'] and prompt.keyword != case['expected_reply'] else ('不应匹配的样例被识别' if prompt and not case['should_match'] else (explain(case['text'], rule)['explanation'] if not prompt and case['should_match'] else '符合预期'))})
     return {'rows': rows, 'passed': bool(rows) and any(c['should_match'] for c in cases) and all(r['passed'] for r in rows)}
 
 

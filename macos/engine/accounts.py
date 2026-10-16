@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 import os
+import sqlite3
 import uuid
 from pathlib import Path
 
@@ -10,6 +11,9 @@ from telethon.errors import FloodWaitError
 
 from engine.service import PROTOCOL, Service, storage_error
 from engine.tasks import rules
+from engine.network import configuration as proxy_configuration
+from engine.account_recovery import retained, inspect as inspect_retained
+from engine.upgrade_backup import create as create_upgrade_backup
 
 
 class AccountService(Service):
@@ -86,6 +90,7 @@ class AccountManager:
                  'last_sync': service.last_sync, 'cooldown': service.cooldown,
                  'setup_completed': service.settings()['setup_completed'],
                  'pause_all': service.settings()['pause_all'], 'error_present': bool(service.error),
+                 'network_proxy': proxy_configuration(json.loads(service.store.preference('network_proxy') or '{}')),
                  'data_directory': '' if slot == 'legacy' else 'accounts/' + slot}
                 for slot, service in self.services.items()]
 
@@ -104,6 +109,39 @@ class AccountManager:
             for service in self.services.values():
                 service.closing = True
             return {'ok': True}
+        if method == 'retained_accounts':
+            return {'rows': await asyncio.to_thread(retained, self)}
+        if method == 'restore_account_entry':
+            async with self.registry_lock:
+                recovered = args.get('slot')
+                if recovered in self.services: raise ValueError('这个入口已经存在')
+                row = await asyncio.to_thread(inspect_retained, self.root, recovered)
+                if args.get('digest') != row['digest'] or args.get('confirmed_account') != row['account']:
+                    raise ValueError('资料已变化，请重新预览并确认身份')
+                if any(row['account'] in (s.account, s.identity.get('id')) for s in self.services.values()):
+                    raise ValueError('这个身份已在现有入口中，请先核对，不能重复恢复')
+                previous = self.active
+                self.add_service(recovered)
+                self.active = recovered
+                try: self.save_registry()
+                except Exception:
+                    self.active = previous
+                    service = self.services.pop(recovered)
+                    task = self.maintenance.pop(recovered, None)
+                    if task: task.cancel(); await asyncio.gather(task, return_exceptions=True)
+                    await service.close()
+                    raise
+                await self.services[recovered].publish()
+                return self.decorate(recovered, self.services[recovered].state())
+        if method == 'upgrade_prepare':
+            async with self.registry_lock:
+                if self.demo: raise ValueError('演示模式不能准备真实升级')
+                if args.get('confirmed_slots') != list(self.services): raise ValueError('账号清单已变化，请重新核对')
+                if any(s.send_jobs for s in self.services.values()): raise ValueError('有发送正在进行，请稍后升级')
+                try:
+                    return await asyncio.to_thread(create_upgrade_backup, self.root, args['destination'], list(self.services))
+                except (OSError, sqlite3.Error):
+                    raise ValueError('升级备份未完成，请检查备份位置及可用空间；原应用继续运行') from None
         if method == 'remove_account':
             async with self.registry_lock:
                 if slot not in self.services:
@@ -218,7 +256,8 @@ class AccountManager:
         try:
             if request.get('protocol') != PROTOCOL:
                 raise ValueError('协议版本不兼容')
-            result = await asyncio.wait_for(self.command(slot, request['method'], request.get('args', {})), 90)
+            timeout = 900 if request['method'] in ('backup', 'backup_preview', 'restore_backup', 'upgrade_prepare') else 90
+            result = await asyncio.wait_for(self.command(slot, request['method'], request.get('args', {})), timeout)
             response = {'id': identifier, 'slot': slot, 'result': result}
         except FloodWaitError as exc:
             if service:

@@ -27,12 +27,13 @@ struct AutomationView: View {
     @ViewState private var preview: Object = [:]
     @ViewState private var previewID = ""
     @ViewState private var templates: [Object] = []
+    @ViewState private var showWizard = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 PageTitle(title: "任务管理", subtitle: "\(model.accountName) · 每个任务独立设置对象、模板、回复和时段。")
                 HStack {
-                    Button("新建任务", systemImage: "plus") { editor = TaskEditorItem(value: ["id": "new"]) }.buttonStyle(.borderedProminent)
+                    Button("新建任务", systemImage: "plus") { showWizard = true }.buttonStyle(.borderedProminent)
                     Menu("从模板新建") {
                         ForEach(Array(templates.enumerated()), id: \.offset) { item in
                             Button(item.element.string("name")) { editor = TaskEditorItem(value: item.element) }
@@ -50,7 +51,7 @@ struct AutomationView: View {
                 if model.taskRules.isEmpty {
                     Panel(title: "创建第一个任务", icon: "bolt") {
                         Text("可以从查岗提示提取每次变化的关键词，也可以匹配指定提示、回复固定内容。保存和预览均不会发送消息。")
-                        Button("配置回复任务") { editor = TaskEditorItem(value: ["id": "new"]) }
+                        Button("配置回复任务") { showWizard = true }
                     }
                 }
                 ForEach(model.taskRules, id: \.taskID) { rule in
@@ -66,6 +67,7 @@ struct AutomationView: View {
             }.padding(28)
         }
         .onAppear { model.request("task_templates") { templates = $0?.rows("rows") ?? [] } }
+        .sheet(isPresented: $showWizard) { TaskWizardView() }
         .sheet(item: $editor) { item in TaskEditorView(initial: item.value) }
         .alert("确认开启任务", isPresented: $enable, presenting: confirming) { rule in
             Button("取消", role: .cancel) { }
@@ -157,7 +159,7 @@ struct AutomationView: View {
 struct PreviewResult: View {
     let value: Object
     var body: some View {
-        Text(value.bool("recognized") ? "匹配成功 · \(taskReference(value.string("number"))) · 将回复“\(value.string("keyword"))” · \(Int(value.number("window_minutes"))) 分钟内有效\(value.string("reply_mode") == "fixed" ? " · 登记未核实" : "")" : "未匹配，不会按此样例自动回复。请核对模板、换行及占位符。")
+        Text(value.bool("recognized") ? "匹配成功 · \(taskReference(value.string("number"))) · 将回复“\(value.string("keyword"))” · \(Int(value.number("window_minutes"))) 分钟内有效\(value.string("reply_mode") == "fixed" ? " · 登记未核实" : "")" : "未匹配，不会按此样例自动回复。\(value.string("explanation"))")
             .textSelection(.enabled).foregroundStyle(value.bool("recognized") ? Color.accentColor : .orange)
     }
 }

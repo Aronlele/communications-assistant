@@ -41,6 +41,7 @@ struct CommunicationsApp: App {
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandGroup(replacing: .appSettings) {
+                Button("检查更新…") { model.showUpdates = true; model.showWindow() }
                 Button("设置…") { model.selection = .settings; model.showWindow() }.keyboardShortcut(",")
             }
             CommandMenu("功能") {
