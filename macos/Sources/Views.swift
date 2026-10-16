@@ -109,6 +109,7 @@ extension Dictionary where Key == String, Value == Any {
 }
 
 struct MainView: View {
+    @ViewState private var showBusy = false
     @EnvironmentObject var model: AppModel
     @Environment(\.openWindow) var openWindow
     var body: some View {
@@ -167,13 +168,21 @@ struct MainView: View {
         .onAppear { model.openMain = { openWindow(id: "main") } }
         .toolbar {
             Button("处理异常", systemImage: "exclamationmark.bubble") { model.showIssues = true }
-            if model.busy { ProgressView().controlSize(.small) }
+            ZStack { if showBusy { ProgressView().controlSize(.small) } }.frame(width: 16, height: 16)
             if model.ready {
                 Button(model.settings.bool("pause_all") ? "恢复当前账号" : "暂停当前账号") {
                     model.control(model.settings.bool("pause_all") ? "resume_all" : "pause_all")
                 }
             }
         }
+        .task(id: model.busy) {
+            showBusy = false
+            if model.busy {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if !Task.isCancelled && model.busy { showBusy = true }
+            }
+        }
+        .sheet(isPresented: $model.showHelp) { HelpRecoveryView() }
         .sheet(isPresented: $model.showIssues) { IssueCenterView() }
         .sheet(isPresented: $model.showUpdates) { ProductUpdateView() }
         .sheet(isPresented: $model.showRetainedAccounts) { RetainedAccountsView() }
@@ -273,7 +282,8 @@ struct LoginSettingsView: View {
                     Button("返回登录") { model.selection = .overview }
                 }
                 DisclosureGroup("高级设置", isExpanded: $model.showAdvancedAPI) {
-                    NetworkSettingsView()
+                    Button("使用帮助与恢复检查…") { model.showHelp = true }
+                NetworkSettingsView()
                     Button("恢复保留的账号资料…") { model.showRetainedAccounts = true }
                     Button("检查更新…") { model.showUpdates = true }
                     APISettingsView().padding(.top, 12)
@@ -488,7 +498,7 @@ struct ArchiveView: View {
     @ViewState private var mode = "recent"
     @ViewState private var archiveStart = Date().addingTimeInterval(-7 * 86400)
     @ViewState private var showImport = false
-    @ViewState private var selectedMessage: String?
+    @ViewState private var showOverview = false
     @ViewState private var checkedMessages = Set<String>()
     @ViewState private var cleanup: ArchiveCleanupItem?
     @ViewState private var repair: ArchiveRepairItem?
@@ -506,6 +516,10 @@ struct ArchiveView: View {
                 Button("选择归档会话") { showConversations = true }
             }
             HStack {
+                Picker("类型", selection: $model.messageKind) {
+                    Text("全部类型").tag("all"); Text("系统消息").tag("system"); Text("图片").tag("image")
+                    Text("其他附件").tag("attachment"); Text("普通文字").tag("text")
+                }.frame(width: 170)
                 TextField("发送者", text: $model.sender).textFieldStyle(.roundedBorder).frame(width: 160)
                 Toggle("按日期筛选", isOn: $model.dateFilter)
                 if model.dateFilter {
@@ -516,6 +530,7 @@ struct ArchiveView: View {
             }.font(.caption)
             Toggle("显示已删除消息的状态", isOn: $model.includeDeleted).font(.caption).onChange(of: model.includeDeleted) { _, _ in model.search() }
             HStack {
+                Button("归档范围与进度…") { showOverview = true }
                 Spacer()
                 Menu("清理本地记录") {
                     Button("删除勾选消息（\(checkedMessages.count) 条）…") {
@@ -539,6 +554,7 @@ struct ArchiveView: View {
                 Text("找到 \(model.resultCount) 条 · 已显示 \(model.results.count) 条").font(.caption).foregroundStyle(.secondary)
                 Button("勾选已加载（最多500条）") { checkedMessages = Set(model.results.prefix(500).map { $0.messageKey }) }.disabled(model.results.isEmpty)
                 Button("取消勾选") { checkedMessages.removeAll() }.disabled(checkedMessages.isEmpty)
+                Text(model.searching ? "正在搜索…" : " ").font(.caption).foregroundStyle(.secondary).frame(width: 80, alignment: .leading)
                 if (model.state["syncing_chats"] as? [Int64] ?? []).count > 0 { ProgressView().controlSize(.small); Text("归档补齐中").font(.caption) }
                 Spacer()
                 Button(model.settings.bool("archive_paused") ? "恢复归档" : "暂停归档") { model.control(model.settings.bool("archive_paused") ? "resume_archive" : "pause_archive") }
@@ -552,11 +568,7 @@ struct ArchiveView: View {
                         }.tag(String(row.chatID))
                     }
                 }.frame(minWidth: 135, idealWidth: 160, maxWidth: 210, maxHeight: .infinity)
-                if model.results.isEmpty {
-                    ContentUnavailableView("没有匹配记录", systemImage: "archivebox", description: Text("选择归档会话或调整条件。"))
-                        .frame(minWidth: 200, maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List(selection: $selectedMessage) {
+                List(selection: $model.selectedMessage) {
                         ForEach(model.results, id: \.messageKey) { row in
                             HStack(alignment: .top) {
                                 Toggle("选择消息", isOn: Binding(get: { checkedMessages.contains(row.messageKey) }, set: { value in
@@ -567,25 +579,31 @@ struct ArchiveView: View {
                                 Button("删除这条本地消息…", role: .destructive) { cleanup = ArchiveCleanupItem(value: ["scope": "selected", "messages": [["chat": Int64(row.number("chat")), "id": Int64(row.number("id"))]]]) }
                             }
                         }
-                        if model.results.count < model.resultCount { Button("加载更多") { model.search(offset: model.results.count) } }
-                    }.listStyle(.inset).frame(minWidth: 280, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
-                }
+                        if model.results.count < model.resultCount { Button("加载更多") { model.search(offset: model.results.count) }.disabled(model.searching) }
+                    }.listStyle(.inset).overlay {
+                        if model.results.isEmpty && !model.searching {
+                            ContentUnavailableView("没有匹配记录", systemImage: "archivebox", description: Text("选择归档会话或调整条件。"))
+                        }
+                    }.frame(minWidth: 280, idealWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
                 VStack(alignment: .leading, spacing: 10) {
                     HStack { Text("消息上下文").font(.headline); Spacer(); if model.searchChat != "0" { Button("原会话") { model.openTelegramChat(Int64(model.searchChat) ?? 0) } } }
-                    if selectedMessage == nil { Text("选择一条消息查看详情").foregroundStyle(.secondary) }
+                    if model.selectedMessage == nil { Text("选择一条消息查看详情").foregroundStyle(.secondary) }
                     else { ScrollView { LazyVStack(alignment: .leading) { ForEach(model.context, id: \.messageKey) { row in MessageRow(message: row, showContextAction: false) } } } }
                 }.padding(12).frame(minWidth: 215, idealWidth: 270, maxWidth: 380, maxHeight: .infinity, alignment: .topLeading)
             }.frame(minHeight: 240, maxHeight: .infinity)
         }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { model.search(); if model.searchFocusRequest > 0 { searchFocused = true } }
+        .sheet(isPresented: $showOverview) { ArchiveOverviewView(chat: Int64(model.searchChat) ?? 0) }
+        .onChange(of: model.messageKind) { _, _ in model.search() }
+        .onChange(of: model.archiveQueryKey) { _, _ in checkedMessages.removeAll() }
         .onChange(of: model.searchFocusRequest) { _, _ in searchFocused = true }
-        .onChange(of: model.searchChat) { _, _ in selectedMessage = nil; model.context = []; model.search() }
+        .onChange(of: model.searchChat) { _, _ in model.selectedMessage = nil; model.context = []; model.search() }
         .sheet(item: $cleanup) { ArchiveCleanupView(options: $0.value) }
         .sheet(item: $repair) { item in
-            ArchiveRepairView(chat: item.chat) { selectedMessage = nil; model.context = []; model.search() }
+            ArchiveRepairView(chat: item.chat) { model.selectedMessage = nil; model.context = []; model.search() }
         }
         .onChange(of: model.results.map { $0.messageKey }) { _, keys in checkedMessages.formIntersection(Set(keys)) }
-        .onChange(of: selectedMessage) { _, key in if let row = model.results.first(where: { $0.messageKey == key }) { model.openContext(row, showSheet: false) } }
+        .onChange(of: model.selectedMessage) { _, key in if let row = model.results.first(where: { $0.messageKey == key }) { model.openContext(row, showSheet: false) } else { model.clearContext() } }
         .sheet(isPresented: $showConversations) {
             VStack(alignment: .leading, spacing: 16) {
                 Text("选择归档会话").font(.title2.weight(.semibold))
@@ -814,30 +832,31 @@ struct SettingsView: View {
                 DisclosureGroup("高级设置", isExpanded: $model.showAdvancedAPI) {
                     APISettingsView().padding(.top, 12)
                     DeviceProfileView().padding(.top, 12)
-                }
-                Panel(title: "在线状态策略 · 实验功能", icon: "clock") {
-                    Toggle("按时段请求在线状态", isOn: Binding(get: { model.settings.bool("online") }, set: { model.change("online", $0) }))
-                    Text("这项功能不能保证他人始终看到你在线。不会向收藏夹发送或删除消息。空白时段表示关闭。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    TextField("IANA 时区，例如 Asia/Shanghai", text: $zone).textFieldStyle(.roundedBorder)
-                    ForEach(0..<7, id: \.self) { day in
-                            HStack { Text(weekdays[day]).frame(width: 48); TextField("09:00-18:00，多段用逗号分隔", text: $weekly[day]).textFieldStyle(.roundedBorder); Button("全天") { weekly[day] = "00:00-24:00" } }
-                    }
-                    HStack {
-                        Button("预览未来七天") {
-                            guard let values = parseWeekly(weekly) else { model.error = "时间段格式不正确"; return }
-                            model.request("schedule_preview", ["weekly": values, "timezone": zone]) { result in if let result { schedulePreview = result.rows("intervals"); previewedSchedule = true } }
+                    DisclosureGroup("在线状态策略 · 实验功能") {
+                        Toggle("按时段请求在线状态", isOn: Binding(get: { model.settings.bool("online") }, set: { model.change("online", $0) }))
+                        Text("这项功能不能保证他人始终看到你在线。不会向收藏夹发送或删除消息。空白时段表示关闭。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        TextField("IANA 时区，例如 Asia/Shanghai", text: $zone).textFieldStyle(.roundedBorder)
+                        ForEach(0..<7, id: \.self) { day in
+                                HStack { Text(weekdays[day]).frame(width: 48); TextField("09:00-18:00，多段用逗号分隔", text: $weekly[day]).textFieldStyle(.roundedBorder); Button("全天") { weekly[day] = "00:00-24:00" } }
                         }
-                        Button("保存时间安排") { saveSchedule() }
-                    }
-                    Text("最近成功状态请求：\(dateText(model.state.number("online_last_success")))。这不代表所有联系人实际看到在线。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("跨午夜时段归属于开始当天，例如周五 23:00-07:00 会延续到周六早晨。").font(.caption).foregroundStyle(.secondary)
-                    if previewedSchedule { Text(schedulePreview.isEmpty ? "预览：没有启用时段" : "以下为预览，尚未保存").font(.caption).foregroundStyle(.secondary) }
-                    ForEach(Array((previewedSchedule ? schedulePreview : model.state.rows("schedule")).enumerated()), id: \.offset) { item in
-                        Text("\(dateText(item.element.number("start"))) → \(dateText(item.element.number("end")))").font(.caption).foregroundStyle(.secondary)
-                    }
+                        HStack {
+                            Button("预览未来七天") {
+                                guard let values = parseWeekly(weekly) else { model.error = "时间段格式不正确"; return }
+                                model.request("schedule_preview", ["weekly": values, "timezone": zone]) { result in if let result { schedulePreview = result.rows("intervals"); previewedSchedule = true } }
+                            }
+                            Button("保存时间安排") { saveSchedule() }
+                        }
+                        Text("最近成功状态请求：\(dateText(model.state.number("online_last_success")))。这不代表所有联系人实际看到在线。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("跨午夜时段归属于开始当天，例如周五 23:00-07:00 会延续到周六早晨。").font(.caption).foregroundStyle(.secondary)
+                        if previewedSchedule { Text(schedulePreview.isEmpty ? "预览：没有启用时段" : "以下为预览，尚未保存").font(.caption).foregroundStyle(.secondary) }
+                        ForEach(Array((previewedSchedule ? schedulePreview : model.state.rows("schedule")).enumerated()), id: \.offset) { item in
+                            Text("\(dateText(item.element.number("start"))) → \(dateText(item.element.number("end")))").font(.caption).foregroundStyle(.secondary)
+                        }
                 }
+                }
+                BackupHealthView()
                 Panel(title: "本地数据", icon: "internaldrive") {
                     Toggle("归档图片（单张最大 10 MB）", isOn: Binding(get: { model.settings.bool("images") }, set: { model.change("images", $0) }))
                     Toggle("不设归档容量上限", isOn: $unlimited)

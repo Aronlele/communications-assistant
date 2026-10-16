@@ -18,6 +18,7 @@ from pathlib import Path
 from telethon import TelegramClient, events, functions, types
 from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError, PasswordHashInvalidError, PhoneNumberInvalidError, PhoneNumberBannedError
 
+from engine.archive_overview import overview as archive_overview
 from engine.archive_cleanup import command as archive_cleanup_command
 from engine.archive_repair import command as archive_repair_command
 from engine.message_content import GroupServiceMessage, service_content
@@ -174,6 +175,9 @@ class Service:
             "executions": self.store.executions(self.account), "ranges": self.store.ranges(self.account),
             "prompts": self.store.prompts(self.account),
             "tasks": task_state(cfg), "task_results": self.store.results(self.account),
+            "results_refresh_key": str(self.generation)+":"+str(self.store.results_revision)+":"+str(self.store.results(self.account, status='attention', limit=0)['count']),
+            "task_checks": [value for value in getattr(self.automation, 'checks', {}).values() if any(rule['id'] == value['id'] and rule['revision'] == value['revision'] for rule in task_state(cfg))] if self.automation else [],
+            "backup_status": json.loads(self.store.preference('backup_status.'+str(self.account)) or '{}'),
             "syncing_chats": sorted(self.syncing_chats),
             "schedule": [{"start": a.timestamp(), "end": b.timestamp()} for a, b in next_intervals],
         }
@@ -317,6 +321,7 @@ class Service:
                 return await archive_cleanup_command(self, method, args)
             if method.startswith('archive_repair_'):
                 return await archive_repair_command(self, method, args)
+            if method == 'archive_overview': return archive_overview(self)
             if method == 'issues': return {'rows': issues(self)}
             if method.startswith('task_') or method == 'setup_complete':
                 return await task_command(self, method, args)
@@ -335,10 +340,18 @@ class Service:
                     counts = await asyncio.to_thread(create_backup, self.root, self.account, args["path"], args.get("password", ""))
                 except OSError:
                     raise ValueError('备份未保存，请检查保存位置、权限与空间；现有任务未改动') from None
+                status = json.loads(self.store.preference('backup_status.'+str(self.account)) or '{}')
+                status.update(created=time.time(), encrypted=bool(args.get('password')), messages=counts.get('messages', 0))
+                self.store.preference('backup_status.'+str(self.account), json.dumps(status))
                 await self.activity("backup", "本地备份已保存，不包含登录会话和 API 凭据")
                 return counts
             elif method == "backup_preview":
-                return await asyncio.to_thread(inspect_backup, args["path"], self.account, password=args.get("password", ""))
+                result = await asyncio.to_thread(inspect_backup, args["path"], self.account, password=args.get("password", ""))
+                status = json.loads(self.store.preference('backup_status.'+str(self.account)) or '{}')
+                status['verified'] = time.time()
+                self.store.preference('backup_status.'+str(self.account), json.dumps(status))
+                await self.publish()
+                return result
             elif method == "restore_backup":
                 if int(args.get("confirmed_account", 0)) != self.account:
                     raise ValueError("请确认备份属于当前账号")
@@ -359,6 +372,7 @@ class Service:
                     try:
                         await self.publish()
                         counts = restore_backup(self.store, account, folder, manifest)
+                        self.store.results_revision += 1
                         restored = True
                         self.device_profile = validate_profile(manifest.get('device_profile', {}))
                         await self.publish()
@@ -431,7 +445,7 @@ class Service:
                     if row["selected"]:
                         self.spawn(self.sync_chat(row["chat"]))
             elif method == "search":
-                allowed = {k: args[k] for k in ("query", "chat", "sender", "start", "end", "offset", "include_deleted") if k in args}
+                allowed = {k: args[k] for k in ("query", "chat", "sender", "start", "end", "offset", "include_deleted", "kind") if k in args}
                 return self.store.search(self.account, **allowed)
             elif method == "notification_context":
                 chat, message_id = int(args["chat"]), int(args["id"])
@@ -527,6 +541,7 @@ class Service:
                     cfg = self.settings(); cfg['rule'].update(automatic=False, armed_at=0)
                     forget_resume(cfg, 'legacy')
                     self.store.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (self.account, json.dumps(cfg, ensure_ascii=False)))
+                self.store.results_revision += 1
                 await self.activity('import', f'旧发送账本已合并 {len(rows)} 条，保留已有编号，自动回复恢复仅提醒')
             elif method == "context":
                 chat, identifier = int(args["chat"]), int(args["id"])
@@ -812,7 +827,9 @@ class Service:
             return
         try:
             if self.automation:
+                previous_checks = dict(getattr(self.automation, "checks", {}))
                 await self.automation.handle(event)
+                if previous_checks != getattr(self.automation, "checks", {}): await self.publish()
             cfg = self.settings()
             row = self.store.conversation(self.account, event.chat_id)
             if row is None and hasattr(event, "get_chat"):
@@ -1074,7 +1091,7 @@ class Service:
         self.store.harden()
 
     def export_filters(self, args):
-        return {key: args[key] for key in ("query", "chat", "sender", "start", "end", "include_deleted") if key in args}
+        return {key: args[key] for key in ("query", "chat", "sender", "start", "end", "include_deleted", "kind") if key in args}
 
     async def retry_pending_media(self):
         account, generation = self.account, self.generation

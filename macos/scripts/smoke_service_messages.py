@@ -35,6 +35,11 @@ def main():
             rows=call('search',{'chat':-42})['result']['messages'];assert len(rows)==3
             assert sum(r['attachment']=='群组系统消息' for r in rows)==2
             assert call('search',{'query':'合成名称'})['result']['count']==1
+            assert call('search',{'chat':-42,'kind':'system'})['result']['count']==2
+            ranges=call('archive_overview')['result'];assert any(r['chat']==-42 and r['count']==3 for r in ranges['rows'])
+            assert call('export_preview',{'chat':-42,'kind':'system'})['result']['count']==2
+            assert call('archive_cleanup_preview',{'chat':-42,'kind':'system','scope':'filter'})['result']['count']==2
+            assert call('state')['result']['results_refresh_key']==state['results_refresh_key']
             preview=call('archive_repair_preview',{'chat':-42})['result'];assert preview['count']==preview['total']==1
             result=call('archive_repair_apply',{'token':preview['token'],'confirmed_account':999001});assert '演示' in result['error']
             assert call('state')['result']['settings']==before
@@ -43,7 +48,7 @@ def main():
             assert call('search',{'chat':-42})['result']['count']==0
             assert 'error' in call('archive_repair_preview',{'chat':-42})
             call('shutdown');process.wait(timeout=10);assert process.returncode==0
-            print('Packaged service messages: searchable descriptions, system labels, old-empty preview, demo/network guard, settings preservation, export and account isolation passed')
+            print('Packaged service messages: searchable descriptions, system labels, old-empty preview, demo/network guard, settings preservation, type-filter/export/cleanup consistency, local archive overview, result revision and account isolation passed')
         finally:
             if process.poll() is None:process.terminate();process.wait(timeout=10)
 

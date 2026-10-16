@@ -4,7 +4,7 @@
 
 原生 macOS Telegram 通讯工作台：多账号同时连接、消息提醒、本地聊天归档，以及用户明确配置的自动回复。
 
-当前发布 **即讯 0.6.1 测试版（构建 18）**，补齐群组系统消息归档、可读显示及逐群分批旧空记录补全；保留 0.6.0 的配置向导、网络代理、安全升级和加密备份，以及多账号、多任务与发送账本。251 项 Python、82 项原生检查及隔离验收通过。本轮按用户要求取消 72 小时观察与自动复查，长期稳定性未验证，旧版本时长不拼接；本机两个账号在线、两条原任务恢复、3条旧空记录全部补全，原有配置和账本保留；结果见[验收记录](design/acceptance.md)。源码：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。下载：[0.6.1 测试版](https://github.com/Aronlele/communications-assistant/releases/tag/v0.6.1)。展示页：[在线查看](https://aronlele.github.io/communications-assistant/)，源码位于 `docs/`；见[发布说明](RELEASING.md)。公开下载无需 GitHub 登录。
+当前发布 **即讯 0.7.0 测试版（构建 19）**：修复点击闪烁、空结果布局跳动、旧搜索覆盖和重复刷新，增加归档范围与类型筛选、任务最近检查解释、备份校验和恢复帮助。保留已有账号、多任务、归档及发送账本，数据库仍为 schema 5。260 项 Python、95 项原生检查及隔离验收通过；真实升级结果见[验收记录](design/acceptance.md)。按用户要求不启动 72 小时观察，长期稳定性未验证。源码：[Aronlele/communications-assistant](https://github.com/Aronlele/communications-assistant)。下载：[0.7.0 测试版](https://github.com/Aronlele/communications-assistant/releases/tag/v0.7.0)。展示页：[在线查看](https://aronlele.github.io/communications-assistant/)，源码位于 `docs/`；见[发布说明](RELEASING.md)。公开下载无需 GitHub 登录。
 
 ## 安装与使用
 
@@ -37,7 +37,7 @@
 
 重启或身份恢复后，需要分别确认账号，再在恢复向导核对并恢复选中的原已开启任务；不补发重启前的旧提示。睡眠、合盖、退出和断网期间不能实时执行。业务备份可选密码加密，不含登录会话、API 或代理密码；升级回退副本包含登录会话，仅存本机。
 
-237 项 Python 回归、77 项原生状态检查、隔离界面及打包引擎验收通过；验证实际 PKG 载荷、权限和临时签名。真实升级和独立 72 小时观察分别记录，详见[验收记录](design/acceptance.md)。发布附件提供 PKG、DMG、ZIP、中文使用说明和 SHA256。
+260 项 Python 回归、95 项原生状态检查、隔离界面及打包引擎验收通过；验证实际 PKG 载荷、权限和临时签名。真实升级单独记录；本轮不启动 72 小时观察，详见[验收记录](design/acceptance.md)。发布附件提供 PKG、DMG、ZIP、中文使用说明和 SHA256。
 
 ## 从源码构建
 

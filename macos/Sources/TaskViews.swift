@@ -121,6 +121,9 @@ struct AutomationView: View {
                 Spacer()
                 Button("删除…", role: .destructive) { deleting = rule; showDelete = true }
             }.disabled(model.busy)
+            if let checked = model.state.rows("task_checks").first(where: { $0.string("id") == rule.string("id") }) {
+                Text("最近检查：" + dateText(checked.number("checked")) + " · " + checked.string("reason")).font(.caption).foregroundStyle(.secondary)
+            } else { Text("本次启动尚未记录此对象的提示检查。仅检查绑定对象的直接私聊，不记录正文；可在编辑中粘贴样例复核。").font(.caption).foregroundStyle(.secondary) }
             if !rule.bool("preview_validated") { Text("开启前请编辑任务，保存并成功预览一条真实格式的样例。").font(.caption).foregroundStyle(.secondary) }
             if previewID == rule.string("id"), !preview.isEmpty {
                 if preview["rows"] != nil { SampleSuiteResult(value: preview) } else { PreviewResult(value: preview) }
@@ -342,6 +345,7 @@ struct TaskResultsView: View {
     @ViewState private var count = 0
     @ViewState private var offset = 0
     @ViewState private var generation = 0
+    @ViewState private var loadingKey = ""
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -387,13 +391,18 @@ struct TaskResultsView: View {
         .onChange(of: model.resultsAttention) { _, value in if value { status = "attention"; offset = 0; model.resultsAttention = false; load() } }
         .onChange(of: task) { offset = 0; load() }
         .onChange(of: status) { offset = 0; load() }
-        .onReceive(model.$state) { _ in if model.ready { load() } }
+        .onChange(of: model.state.string("results_refresh_key")) { _, _ in if model.ready { load() } }
     }
     func load() {
-        generation += 1; let current = generation
+        let key = task + ":" + status + ":" + String(offset) + ":" + model.state.string("results_refresh_key")
+        guard key != loadingKey else { return }
+        loadingKey = key; generation += 1; let current = generation
         model.request("task_results", ["task_id": task, "status": status, "offset": offset], background: true) { value in
-            guard let value, generation == current else { return }
-            rows = value.rows("rows"); count = Int(value.number("count"))
+            guard generation == current else { return }
+            loadingKey = ""
+            guard let value else { return }
+            if !sameJSON(rows, value.rows("rows")) { rows = value.rows("rows") }
+            let nextCount = Int(value.number("count")); if count != nextCount { count = nextCount }
         }
     }
 }

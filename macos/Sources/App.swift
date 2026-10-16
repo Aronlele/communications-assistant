@@ -44,6 +44,7 @@ struct CommunicationsApp: App {
                 Button("检查更新…") { model.showUpdates = true; model.showWindow() }
                 Button("设置…") { model.selection = .settings; model.showWindow() }.keyboardShortcut(",")
             }
+            CommandGroup(after: .help) { Button("使用帮助与恢复检查…") { model.showHelp = true; model.showWindow() } }
             CommandMenu("功能") {
                 Button("搜索聊天归档") { model.selection = .archive; model.searchFocusRequest += 1; model.showWindow() }.keyboardShortcut("f", modifiers: .command)
                 ForEach(Array(Destination.allCases.enumerated()), id: \.element) { item in

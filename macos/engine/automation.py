@@ -14,6 +14,14 @@ class Automation:
         self.send, self.activity = send, activity
         self.started = started if started is not None else time.time()
         self.lock = asyncio.Lock()
+        self.checks = {}
+
+    def record_check(self, rule, message, status, reason):
+        # 仅本进程、每条规则最后一次检查；不持久化正文或关键词。
+        self.checks[rule['id']] = {'id': rule['id'], 'target': rule['target'], 'message_id': message.id,
+                                   'checked': time.time(), 'status': status, 'reason': reason, 'revision': revision(rule)}
+        valid = {value['id'] for value in rules(self.settings())}
+        self.checks = {key: value for key, value in self.checks.items() if key in valid}
 
     async def handle(self, event, now=None):
         config = self.settings()
@@ -21,7 +29,9 @@ class Automation:
         target = event.sender_id
         if not target or not event.is_private or event.chat_id != target:
             return
+        bound = [rule for rule in rules(config) if rule['target'] == target]
         if message.out or message.fwd_from is not None or message.via_bot_id is not None:
+            for rule in bound: self.record_check(rule, message, 'ignored', '本人发出、转发或经其他机器人发送，未进入回复处理')
             if '查岗提醒' in (message.raw_text or '') and not message.out:
                 await self.activity('skipped', '查岗消息来自转发或 via-bot，未发送')
             return
@@ -33,13 +43,20 @@ class Automation:
         candidates = [(rule, parse_reply(message.raw_text or '', rule, message.id))
                       for rule in rules(config) if rule['target'] == target]
         matches = [(rule, prompt) for rule, prompt in candidates if prompt]
+        for rule, prompt in candidates:
+            self.record_check(rule, message, 'matched' if prompt else 'unmatched',
+                              '提示已匹配，等待检查发送条件' if prompt else '与完整提示不相同或提取格式不匹配；请在任务编辑中粘贴样例复核')
         if not matches:
             if candidates and '查岗提醒' in (message.raw_text or ''):
                 await self.activity('skipped', '目标机器人的查岗消息格式无法识别，未发送')
             return
         # 列表顺序是明确的优先级；仅提醒任务不遮挡已启用任务。
         rule, prompt = next(((rule, prompt) for rule, prompt in matches if rule['automatic']), matches[0])
+        for other, _ in matches:
+            if other['id'] != rule['id']:
+                self.record_check(other, message, 'skipped', '由另一条匹配任务处理，未重复发送')
         def remember(mode, reason=''):
+            self.record_check(rule, message, mode, reason or {'reminder':'任务为仅提醒，未开启自动回复', 'sending':'已提交发送处理', 'sent':'发送已提交；实际登记需按回执或原会话核对'}.get(mode, mode))
             date = message.date.timestamp() if isinstance(message.date, datetime) and message.date.tzinfo is not None else 0
             self.store.remember_prompt(self.account, target, prompt, message.id, date, mode, reason, rule['id'], rule['name'])
         if not rule["automatic"]:
@@ -60,6 +77,7 @@ class Automation:
                 return
             date = message.date
             if not isinstance(date, datetime) or date.tzinfo is None or current.tzinfo is None:
+                self.record_check(rule, message, "skipped", "消息时间不可验证，未发送")
                 return
             timestamp = date.timestamp()
             cutoff = max(self.started, rule.get("armed_at", 0))

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CryptoKit
+import Combine
 
 @main
 struct AccountsProbe {
@@ -153,6 +154,64 @@ struct AccountsProbe {
         check((["text": "系统事件说明", "attachment": "群组系统消息"] as Object).archiveBody == "系统事件说明", "系统消息显示可读说明")
         check((["deleted": true, "text": "旧事件"] as Object).archiveBody == "这条消息已被删除", "删除状态优先于事件说明")
         check((["text": "", "media_state": "not_requested"] as Object).archiveBody == "图片（无文字说明）", "图片空说明与未知消息区分")
+        model.receive(state("legacy"))
+        model.query = "older-query"; model.search()
+        let olderSearch = model.probeRequests.last!
+        model.query = "current-query"; model.search()
+        let currentSearch = model.probeRequests.last!
+        model.receive(["id": currentSearch.string("id"), "result": ["messages": [["id": 2, "chat": 42, "text": "current-result"]], "count": 1]])
+        model.receive(["id": olderSearch.string("id"), "result": ["messages": [["id": 1, "chat": 42, "text": "stale-result"]], "count": 1]])
+        check(model.results.first?.string("text") == "current-result", "旧查询晚到不能覆盖最新结果")
+        model.openContext(["id": 2, "chat": 42], showSheet: false)
+        let oldContext = model.probeRequests.last!
+        model.query = "context-replaced"; model.search(); let contextSearch = model.probeRequests.last!
+        model.receive(["id": oldContext.string("id"), "result": ["messages": [["text": "old-context"]]]])
+        check(model.context.isEmpty, "筛选后晚到的上下文不能重新出现")
+        model.receive(["id": contextSearch.string("id"), "result": ["messages": [], "count": 0]])
+        model.query = "same-pending"; model.search()
+        let samePending = model.probeRequests.last!; let requestCount = model.probeRequests.count
+        model.search()
+        check(model.probeRequests.count == requestCount, "同一在途查询只发送一次")
+        check(!model.busy && model.searching, "普通搜索只更新局部加载，不闪全局忙碌")
+        model.receive(["id": samePending.string("id"), "result": ["messages": [["id": 8, "chat": 42, "text": "kept"]], "count": 3]])
+        model.selectedMessage = "42:8"; model.context = [["text": "previous-context"]]
+        model.query = "empty-query"; model.search(); let emptySearch = model.probeRequests.last!
+        check(model.selectedMessage == nil && model.context.isEmpty, "筛选变化立即清理旧选择及上下文")
+        model.receive(["id": emptySearch.string("id"), "result": ["messages": [], "count": 0]])
+        check(model.results.isEmpty && !model.searching, "空查询结束保留准确计数与局部状态")
+        model.query = "account-return"; model.search(); let accountReturn = model.probeRequests.last!
+        model.receive(state(second, active: second)); model.receive(state("legacy"))
+        model.receive(["id": accountReturn.string("id"), "result": ["messages": [["text": "stale-account-return"]], "count": 1]])
+        check(model.results.isEmpty, "账号切走再切回也拒绝旧代次结果")
+        model.query = "page-race"; model.search(); let pageStart = model.probeRequests.last!
+        model.receive(["id": pageStart.string("id"), "result": ["messages": [["id": 9, "chat": 42]], "count": 2]])
+        model.search(offset: 1); let pageRequest = model.probeRequests.last!
+        model.query = "replacement"; model.search(); let replacement = model.probeRequests.last!
+        model.receive(["id": replacement.string("id"), "result": ["messages": [["id": 10, "chat": 42]], "count": 1]])
+        model.receive(["id": pageRequest.string("id"), "result": ["messages": [["id": 11, "chat": 42]], "count": 2]])
+        check(model.results.count == 1 && model.results[0].number("id") == 10, "旧分页不会拼入新筛选")
+        model.request("settings", ["preview": true]); let writing = model.probeRequests.last!
+        model.request("issues"); let reading = model.probeRequests.last!
+        model.receive(["id": reading.string("id"), "result": [:]])
+        check(model.busy, "只读响应不能提前解除在途修改的保护")
+        model.receive(["id": writing.string("id"), "result": [:]])
+        check(!model.busy, "修改完成后解除忙碌保护")
+        model.verifyBackupOnly = true; model.restorePath = "/synthetic/backup.zip"; model.restorePassword = "synthetic"
+        model.previewBackup(); let verification = model.probeRequests.last!
+        model.receive(["id": verification.string("id"), "result": ["account": 101]])
+        check(!model.showRestore && model.restorePath.isEmpty && model.restorePassword.isEmpty, "仅校验备份不进入恢复确认并清理密码路径")
+        model.receive(state("legacy"))
+        var equalStatePublications = 0
+        let equalStateObserver = model.objectWillChange.sink { equalStatePublications += 1 }
+        model.receive(state("legacy"))
+        check(equalStatePublications == 0, "相同账号快照不广播无效界面更新")
+        withExtendedLifetime(equalStateObserver) {}
+        model.query = "stale-error"; model.search(); let staleError = model.probeRequests.last!
+        model.query = "current-after-error"; model.search(); let afterError = model.probeRequests.last!
+        let previousError = model.error
+        model.receive(["id": afterError.string("id"), "result": ["messages": [], "count": 0]])
+        model.receive(["id": staleError.string("id"), "error": "synthetic stale failure"])
+        check(model.error == previousError, "旧查询失败也不能弹出过期错误")
         print("Native multi-account and readiness state: \(checks) checks passed")
         exit(0)
     }

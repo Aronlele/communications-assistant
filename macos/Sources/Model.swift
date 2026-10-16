@@ -19,6 +19,12 @@ extension Dictionary where Key == String, Value == Any {
     func rows(_ key: String) -> [Object] { self[key] as? [Object] ?? [] }
 }
 
+func sameJSON(_ lhs: Any, _ rhs: Any) -> Bool {
+    if let a = lhs as? Object, let b = rhs as? Object { return NSDictionary(dictionary: a).isEqual(NSDictionary(dictionary: b)) }
+    if let a = lhs as? [Object], let b = rhs as? [Object] { return NSArray(array: a).isEqual(NSArray(array: b)) }
+    return false
+}
+
 enum Destination: String, CaseIterable, Identifiable {
     case overview = "概览", reminders = "消息提醒", archive = "聊天归档"
     case automation = "任务管理", results = "任务结果", accounts = "所有账号", setup = "准备与恢复"
@@ -187,6 +193,13 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     @Published var results: [Object] = []
     @Published var resultCount = 0
     @Published var query = ""
+    @Published var messageKind = "all"
+    @Published private(set) var searching = false
+    @Published private(set) var archiveQueryKey = ""
+    @Published var selectedMessage: String?
+    private var searchGeneration = 0
+    private var searchInFlight = Set<String>()
+    @Published var showHelp = false
     @Published var searchChat = "0"
     @Published var sender = ""
     @Published var startDate = Date().addingTimeInterval(-30 * 86400)
@@ -216,6 +229,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     @Published var showBackupPassword = false
     @Published var backupPasswordForRestore = false
     var restorePassword = ""
+    var verifyBackupOnly = false
     @Published var resultsAttention = false
     @Published var exportSummary = ""
     @Published var showExport = false
@@ -232,7 +246,9 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
     @Published var preventSleep = false
     private var powerAssertion: IOPMAssertionID = 0
     private var pending: [String: (Object?) -> Void] = [:]
+    private var requestValidity: [String: () -> Bool] = [:]
     private var activeRequests = Set<String>()
+    private var outstandingRequests = Set<String>()
     private var contextGeneration = 0
     private var link = EngineLink()
     private var linkGeneration = 0
@@ -320,7 +336,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
 
     func startEngine() {
         engineUnavailable = false
-        pending.removeAll(); activeRequests.removeAll(); busy = false
+        pending.removeAll(); requestValidity.removeAll(); activeRequests.removeAll(); outstandingRequests.removeAll(); busy = false; resetSearch()
         linkGeneration += 1
         let generation = linkGeneration
         state = ["auth": "starting"]
@@ -387,8 +403,9 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
 
     func receive(_ object: Object) {
         if let id = object["id"] as? String {
-            activeRequests.remove(id); busy = !activeRequests.isEmpty
-            if let message = object["error"] as? String {
+            outstandingRequests.remove(id); activeRequests.remove(id); updateBusy()
+            let current = requestValidity.removeValue(forKey: id)?() ?? true
+            if let message = object["error"] as? String, current {
                 error = object.string("slot").isEmpty || object.string("slot") == selectedSlot ? message : "另一个账号操作未完成，请切换账号查看连接状态。"
             }
             pending.removeValue(forKey: id)?(object["result"] as? Object)
@@ -402,7 +419,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             let previousSlotSettings = accountStates[slot]?.object("settings") ?? [:]
             accountStates[slot] = next
             if next["accounts"] != nil {
-                accounts = next.rows("accounts")
+                if !sameJSON(accounts, next.rows("accounts")) { accounts = next.rows("accounts") }
                 let slots = Set(accounts.map { $0.string("slot") })
                 accountStates = accountStates.filter { slots.contains($0.key) }
                 restoredSlots.formIntersection(slots)
@@ -423,14 +440,15 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
             guard slot == selectedSlot else { return }
             let previous = settings
             if state.number("account") != next.number("account") {
+                resetSearch()
                 contextGeneration += 1
                 results = []; resultCount = 0; context = []; preview = [:]; diagnostics = ""
-                showIssues = false; resultsAttention = false
+                showHelp = false; showIssues = false; resultsAttention = false
         showContext = false; showDiagnostics = false; showExport = false
                 searchChat = "0"; query = ""; sender = ""; dateFilter = false
             }
             let previousAuth = state.string("auth")
-            state = next
+            if !sameJSON(state, next) { state = next }
             if previousAuth != "ready", next.string("auth") == "ready",
                !settings.bool("setup_completed") || !pendingRecovery.isEmpty { selection = .setup }
             if error == "消息引擎意外退出，正在恢复；自动回复需重新启用。",
@@ -452,26 +470,35 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         }
     }
 
-    func request(_ method: String, _ args: Object = [:], slot: String? = nil, background: Bool = false, completion: ((Object?) -> Void)? = nil) {
+    private func updateBusy() {
+        let value = !activeRequests.isEmpty
+        if busy != value { busy = value }
+    }
+
+    func request(_ method: String, _ args: Object = [:], slot: String? = nil, background: Bool = false, valid: (() -> Bool)? = nil, completion: ((Object?) -> Void)? = nil) {
         let id = UUID().uuidString
         let targetSlot = slot ?? selectedSlot
-        if !background { activeRequests.insert(id) }
+        let quiet = background || ["search", "context", "task_templates", "task_results", "issues", "diagnostics", "retained_accounts", "archive_overview"].contains(method)
+        if let valid { requestValidity[id] = valid }
+        outstandingRequests.insert(id)
+        if !quiet { activeRequests.insert(id) }
         if let completion { pending[id] = { [weak self] result in
             guard self?.selectedSlot == targetSlot || ["select_account", "add_account", "remove_account", "restore_account_entry"].contains(method) else { return }
             completion(result)
         } }
-        busy = !activeRequests.isEmpty
+        updateBusy()
         do { try link.send(["protocol": 1, "id": id, "slot": targetSlot, "method": method, "args": args]) }
         catch {
             pending.removeValue(forKey: id)?(nil)
-            activeRequests.remove(id); busy = !activeRequests.isEmpty
+            outstandingRequests.remove(id); activeRequests.remove(id); requestValidity.removeValue(forKey: id); updateBusy()
             self.error = error.localizedDescription
         }
         Task {
             try? await Task.sleep(nanoseconds: ["backup", "backup_preview", "restore_backup", "upgrade_prepare"].contains(method) ? 905_000_000_000 : 95_000_000_000)
-            if activeRequests.remove(id) != nil {
-                busy = !activeRequests.isEmpty
-                error = "操作等待超时，请核对状态后再试"
+            if outstandingRequests.remove(id) != nil {
+                activeRequests.remove(id); updateBusy()
+                let current = requestValidity.removeValue(forKey: id)?() ?? true
+                if selectedSlot == targetSlot && current { error = "操作等待超时，请核对状态后再试" }
                 pending.removeValue(forKey: id)?(nil)
             }
         }
@@ -486,6 +513,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
 
     func selectLocalSlot(_ slot: String) {
         guard slot == "legacy" || UUID(uuidString: slot) != nil else { return }
+        resetSearch()
         selectedSlot = slot
         state = accountStates[slot] ?? ["auth": "starting"]
         let savedID = UserDefaults.standard.string(forKey: preferenceKey("apiID")) ?? ""
@@ -493,8 +521,8 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         customAPI = !demo && apiSource == .custom ? apiConfiguration(for: slot) : nil
         contextGeneration += 1; configurationRevision += 1
         results = []; resultCount = 0; context = []; preview = [:]; diagnostics = ""
-        restorePreview = [:]; restorePath = ""; restorePassword = ""; showBackupPassword = false; showRetainedAccounts = false; ledgerPreview = [:]; ledgerPath = ""
-        showIssues = false; resultsAttention = false
+        restorePreview = [:]; restorePath = ""; restorePassword = ""; verifyBackupOnly = false; showBackupPassword = false; showRetainedAccounts = false; ledgerPreview = [:]; ledgerPath = ""
+        showHelp = false; showIssues = false; resultsAttention = false
         showContext = false; showDiagnostics = false; showExport = false; showRestore = false; showLedger = false
         searchChat = "0"; query = ""; sender = ""; dateFilter = false
         phone = ""; code = ""; password = ""; error = ""; info = ""
@@ -575,6 +603,7 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
 
     func filters() -> Object {
         var args: Object = ["query": query, "chat": Int64(searchChat) ?? 0, "sender": sender]
+        args["kind"] = messageKind
         args["include_deleted"] = includeDeleted
         args["include_media"] = exportMedia
         if dateFilter {
@@ -584,18 +613,45 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         }
         return args
     }
+    func resetSearch() {
+        searchGeneration += 1; searchInFlight.removeAll()
+        searching = false; archiveQueryKey = ""; selectedMessage = nil; messageKind = "all"
+    }
     func search(offset: Int = 0) {
+        let data = (try? JSONSerialization.data(withJSONObject: filters(), options: [.sortedKeys])) ?? Data()
+        let key = selectedSlot + ":" + String(Int64(state.number("account"))) + ":" + String(decoding: data, as: UTF8.self)
+        let requestKey = key + ":" + String(offset)
+        guard !searchInFlight.contains(requestKey) else { return }
+        if offset > 0 {
+            guard key == archiveQueryKey, offset == results.count, !searching else { return }
+        } else {
+            searchGeneration += 1; searchInFlight.removeAll()
+            if archiveQueryKey != key {
+                contextGeneration += 1; context = []; selectedMessage = nil
+                archiveQueryKey = key
+            }
+        }
+        let generation = searchGeneration
+        searchInFlight.insert(requestKey); searching = true
         var args = filters(); args["offset"] = offset
-        request("search", args) { [weak self] result in
-            guard let self, let result else { return }
-            if offset == 0 { results = result.rows("messages") } else { results += result.rows("messages") }
-            resultCount = Int(result.number("count"))
+        request("search", args, valid: { [weak self] in self?.searchGeneration == generation && self?.archiveQueryKey == key }) { [weak self] result in
+            guard let self, generation == searchGeneration, key == archiveQueryKey else { return }
+            searchInFlight.remove(requestKey); searching = false
+            guard let result else { return }
+            let rows = offset == 0 ? result.rows("messages") : results + result.rows("messages")
+            if !sameJSON(results, rows) { results = rows }
+            let count = Int(result.number("count")); if resultCount != count { resultCount = count }
+            if let selectedMessage, !rows.contains(where: { $0.messageKey == selectedMessage }) {
+                self.selectedMessage = nil; contextGeneration += 1; context = []
+            }
         }
     }
+    func clearContext() { contextGeneration += 1; context = [] }
+
     func openContext(_ message: Object, showSheet: Bool = true) {
         contextGeneration += 1
         let generation = contextGeneration
-        request("context", ["chat": message.number("chat"), "id": message.number("id")]) { [weak self] result in
+        request("context", ["chat": message.number("chat"), "id": message.number("id")], valid: { [weak self] in self?.contextGeneration == generation }) { [weak self] result in
             guard let self, generation == contextGeneration else { return }
             context = result?.rows("messages") ?? []
             contextNote = "显示所选消息附近的本地记录；未归档部分不会出现在这里。"
@@ -650,9 +706,10 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         guard panel.runModal() == .OK, let url = panel.url else { return }
         request("backup", ["path": url.path, "password": password]) { [weak self] result in if result != nil { self?.info = password.isEmpty ? "本地明文备份已保存，不包含登录会话或API凭据" : "加密备份已保存；密码未保存，请妥善保管" } }
     }
-    func chooseBackup() {
+    func chooseBackup(verifyOnly: Bool = false) {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.zip, UTType(filenameExtension: "jixunbackup") ?? .data]; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        verifyBackupOnly = verifyOnly
         restorePath = url.path; restorePreview = [:]; restorePassword = ""
         do {
             let input = try FileHandle(forReadingFrom: url); defer { try? input.close() }
@@ -665,7 +722,10 @@ final class AppModel: NSObject, ObservableObject, AVSpeechSynthesizerDelegate, U
         request("backup_preview", ["path": restorePath, "password": restorePassword]) { [weak self] result in
             guard let self else { return }
             guard let result else { restorePassword = ""; return }
-            restorePreview = result; showRestore = true
+            if verifyBackupOnly {
+                restorePassword = ""; restorePreview = [:]; restorePath = ""
+                info = "所选备份完整性及账号归属校验通过；未恢复资料，原任务保持运行"
+            } else { restorePreview = result; showRestore = true }
         }
     }
     func chooseLegacyLedger() {

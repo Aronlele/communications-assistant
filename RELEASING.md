@@ -10,15 +10,15 @@ bash scripts/test-native.sh
 TGA_RELEASE=1 TGA_OUTPUT_ROOT="$PWD/output/release-preview" bash macos/scripts/build.sh
 python3 macos/scripts/smoke.py output/release-preview/通讯助手.app/Contents/Resources/Engine/tgengine
 codesign --verify --deep --strict output/release-preview/通讯助手.app
-hdiutil verify output/release-preview/通讯助手-0.6.1-arm64.dmg
-python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.6.1-macOS-arm64.pkg output/release-preview/通讯助手.app
+hdiutil verify output/release-preview/通讯助手-0.7.0-arm64.dmg
+python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.7.0-macOS-arm64.pkg output/release-preview/通讯助手.app
 ```
 
 API 配置仅用于签名前生成资源，不加入 Git。发布说明须写明 TEST ONLY、临时签名、实际验证环境及待验收范围；正式产品 API 尚未就绪。
 
 构建默认生成 PKG、DMG、ZIP；PKG 是网站的首选入口。已有验收通过的应用可单独运行 `bash macos/scripts/package_installer.sh /绝对路径/通讯助手.app`，随后执行 `check_installer.py` 验证载荷与原应用一致，不需要重签应用或替换正在运行的副本。安装器没有安装脚本，不触碰用户资料、不下载依赖、不自动启动应用；系统安装器负责固定目录与升级检查。当前只生成未签名、未公证的测试安装器。
 
-提交 main，创建与包版本一致的 v0.6.1 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
+提交 main，创建与包版本一致的 v0.7.0 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
 
 对已有 v0.3.3 补充 PKG 时不移动标签、不重建 DMG/ZIP；保留原 `source_commit`，另记 `installer_commit`、`website_commit` 及实际验证范围。安装交付脚本以该提交为复现依据，不能假称原应用标签已含后补脚本。
 
@@ -80,3 +80,7 @@ python3 scripts/prepare_release.py --source output/macos-0.4.0-candidate --verif
 独立发行构建包含最新说明；251项Python、82项原生、打包引擎及服务消息冒烟、PKG/DMG/ZIP检查通过后再发布。升级前正常退出，完整备份资料、会话、旧应用与偏好；系统安装器原位安装，按升级前启用集合恢复原任务。旧空记录通过应用已有引擎逐群预览与确认，报告可恢复与不可恢复数量，不另建客户端或发送验收消息。
 
 用户明确取消本轮72小时观察：停止采样并删除自动复查，不启动新版观察，元数据标记cancelled_by_user且未通过，不传入旧版summary。历史观察和计划中断证据保留。仅上传脱敏发布附件，不上传升级备份或真实消息。公开附件核对后再部署Pages。
+
+## 0.7.0发布
+
+构建19；260项Python与95项原生检查。发布代码、PKG/DMG/ZIP、当前中文说明、校验清单、离线展示页和元数据。原位升级及原任务恢复结果单独记入验收记录。按用户要求不启动72小时观察，不将历史版本时长拼接为通过；仍为TEST ONLY、临时签名且未公证的测试预发布。

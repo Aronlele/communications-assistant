@@ -48,7 +48,7 @@ async def command(service, method, args):
             rows = load_rows(service, keys)
             if len(rows) != len(keys): raise ValueError('所选消息已变化，请刷新后重新选择')
         else:
-            filters = {key: args[key] for key in ('query', 'sender', 'start', 'end') if key in args} if scope == 'filter' else {}
+            filters = {key: args[key] for key in ('query', 'sender', 'start', 'end', 'kind') if key in args} if scope == 'filter' else {}
             rows = service.store.search(service.account, chat=chat, include_deleted=(True if scope == 'conversation' else bool(args.get('include_deleted', False))), limit=10001, **filters)['messages']
             if len(rows) > 10000: raise ValueError('单次最多清理 10000 条，请用会话或日期缩小范围')
             keys = [(r['chat'], r['id']) for r in rows]

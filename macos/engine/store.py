@@ -26,6 +26,7 @@ class Store:
     """仅由引擎事件循环写入。所有业务查询都强制指定账号。"""
 
     def __init__(self, root):
+        self.results_revision = 0
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
@@ -211,8 +212,14 @@ class Store:
             if path.is_relative_to((self.root / "media").resolve()):
                 path.unlink(missing_ok=True)
 
-    def search(self, account, query="", chat=0, sender="", start=0, end=0, limit=200, offset=0, include_deleted=False):
+    def search(self, account, query="", chat=0, sender="", start=0, end=0, limit=200, offset=0, include_deleted=False, kind="all"):
         clauses, args = ["m.account=?"], [account]
+        filters = {"all": "1", "system": "m.attachment='群组系统消息'",
+                   "image": "(m.media<>'' OR m.media_state IN ('saved','not_requested','failed','too_large','unknown_size','cleared') OR m.attachment LIKE 'image/%') AND m.attachment<>'群组系统消息'",
+                   "attachment": "m.attachment<>'' AND m.attachment<>'群组系统消息' AND m.media='' AND m.media_state NOT IN ('saved','not_requested','failed','too_large','unknown_size','cleared') AND m.attachment NOT LIKE 'image/%'",
+                   "text": "m.text<>'' AND m.attachment='' AND m.media='' AND m.media_uid=''"}
+        if not isinstance(kind, str) or kind not in filters: raise ValueError('消息类型筛选无效')
+        clauses.append('('+filters[kind]+')')
         if not include_deleted:
             clauses.append("m.deleted=0")
         if query:
@@ -245,13 +252,16 @@ class Store:
                                      (account, target, prompt.number, "sending", prompt.keyword,
                                       message_id, date, time.time(), date + prompt.window_minutes * 60, task_id, task_name,
                                       account, target, message_id))
+        if result.rowcount: self.results_revision += 1
         return result.rowcount == 1
 
     def execution_status(self, account, target, number, status, sent_id=None):
         with self.db:
-            self.db.execute("UPDATE executions SET status=CASE WHEN status='confirmed' THEN status ELSE ? END,updated=?,sent_id=COALESCE(?,sent_id) "
+            result = self.db.execute("UPDATE executions SET status=CASE WHEN status='confirmed' THEN status ELSE ? END,updated=?,sent_id=COALESCE(?,sent_id) "
                             "WHERE account=? AND target=? AND number=?",
                             (status, time.time(), sent_id, account, target, number))
+
+        if result.rowcount: self.results_revision += 1
 
     def confirm(self, account, target, number):
         with self.db:
@@ -259,6 +269,7 @@ class Store:
                                     "WHERE account=? AND target=? AND number=? "
                                     "AND status IN ('sending','sent','send_unknown')",
                                     (time.time(), account, target, number))
+        if result.rowcount: self.results_revision += 1
         return result.rowcount > 0
 
     def executions(self, account):
@@ -271,11 +282,13 @@ class Store:
 
     def remember_prompt(self, account, target, prompt, message_id, date, mode, reason='', task_id='legacy', task_name='原有回复任务'):
         with self.db:
-            self.db.execute("INSERT INTO prompts(account,target,message_id,number,keyword,date,deadline,mode,reason,task_id,task_name) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+            result = self.db.execute("INSERT INTO prompts(account,target,message_id,number,keyword,date,deadline,mode,reason,task_id,task_name) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
                             "ON CONFLICT(account,target,message_id) DO UPDATE SET mode=excluded.mode,reason=excluded.reason "
                             "WHERE prompts.mode NOT IN ('sent','send_unknown','sending') OR "
                             "(prompts.mode='sending' AND excluded.mode IN ('sent','send_unknown'))",
                             (account, target, message_id, prompt.number, prompt.keyword, date, date + prompt.window_minutes * 60 if date > 0 else None, mode, reason, task_id, task_name))
+
+        if result.rowcount: self.results_revision += 1
 
     def results(self, account, task_id='', status='', offset=0, limit=50):
         clauses, args = ['account=?'], [account]
@@ -325,9 +338,10 @@ class Store:
         with self.db:
             self.db.execute("DELETE FROM messages WHERE account=? AND date<?", (account, cutoff))
             self.db.execute("DELETE FROM activities WHERE account=? AND date<?", (account, cutoff))
-            self.db.execute("DELETE FROM prompts WHERE account=? AND date<?", (account, cutoff))
+            changed = self.db.execute("DELETE FROM prompts WHERE account=? AND date<?", (account, cutoff)).rowcount
             self.db.execute("DELETE FROM ranges WHERE account=? AND end<?", (account, cutoff))
-            self.db.execute("UPDATE executions SET keyword='' WHERE account=? AND updated<?", (account, cutoff))
+            changed += self.db.execute("UPDATE executions SET keyword='' WHERE account=? AND updated<? AND keyword<>''", (account, cutoff)).rowcount
+        if changed: self.results_revision += 1
         for row in rows:
             self.remove_media(row[0])
         self.clean_backup(account, cutoff=cutoff)
@@ -390,6 +404,9 @@ class Store:
         self.clean_backup(account, chat=chat)
 
     def erase_account(self, account):
+        self.results_revision += 1
+        with self.db:
+            self.db.execute("DELETE FROM preferences WHERE key=?", ("backup_status."+str(account),))
         for c in self.conversations(account):
             self.erase_chat(account, c["chat"])
         with self.db:
@@ -429,6 +446,8 @@ class Store:
                             backup.execute(f"DELETE FROM {table} WHERE account=?", (account,))
                     if "accounts" in tables:
                         backup.execute("DELETE FROM accounts WHERE id=?", (account,))
+                    if "preferences" in tables:
+                        backup.execute("DELETE FROM preferences WHERE key=?", ("backup_status."+str(account),))
             backup.execute("VACUUM")
         finally:
             backup.close()

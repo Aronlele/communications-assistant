@@ -175,3 +175,101 @@ struct IssueCenterView: View {
         }
     }
 }
+
+struct ArchiveOverviewView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    let chat: Int64
+    @ViewState private var rows: [Object] = []
+    @ViewState private var loading = false
+    @ViewState private var loaded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("归档范围与进度").font(.title2)
+            Text(model.accountName + " · 这里只统计本机现存记录，不代表完整聊天历史。").foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if !loaded { Text(loading ? "正在读取本地范围…" : "本地范围尚未读取，失败时可刷新。") }
+                    else if rows.isEmpty { Text("暂无会话。先选择要归档的私聊或群组；未选择的会话不会保存消息。") }
+                    ForEach(rows, id: \.chatID) { row in
+                        Panel(title: row.string("title"), icon: "archivebox") {
+                            Text(row.string("status"))
+                            Text("本地现存 \(Int(row.number("count"))) 条 · 最早：\(dateText(row.number("earliest")))\n最晚：\(dateText(row.number("latest")))")
+                            Text("起始依据：\(row.string("basis"))\n记录的起点：\(dateText(row.number("started")))").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text("从最近300条、仅新消息或指定日期开始的归档各有边界。保留期、主动清理、停止归档和平台删除都会影响本地范围；同步结束也不表示已恢复平台全部历史。").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack { Button("关闭") { dismiss() }; Spacer(); Button("刷新本地范围") { load() }.disabled(loading) }
+        }.padding(26).frame(width: 650, height: 530).onAppear { load() }
+    }
+    func load() {
+        guard !loading else { return }; loading = true
+        model.request("archive_overview") { value in
+            loading = false
+            guard let value else { return }
+            let next = value.rows("rows").filter { chat == 0 || $0.chatID == chat }
+            if !sameJSON(rows, next) { rows = next }; loaded = true
+        }
+    }
+}
+
+struct BackupHealthView: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        Panel(title: "备份与恢复检查", icon: "externaldrive.badge.checkmark") {
+            let status = model.state.object("backup_status")
+            Text(status.number("created") > 0 ? "上次成功创建：\(dateText(status.number("created"))) · \(status.bool("encrypted") ? "加密" : "明文") · \(Int(status.number("messages")))条消息" : "尚无此账号的成功备份记录。")
+            if status.number("created") == 0 || Date().timeIntervalSince1970 - status.number("created") > 7 * 86400 {
+                Text("建议保存一份近期加密备份，并校验文件；备份记录本身不能替代备份文件。").font(.caption).foregroundStyle(.secondary)
+            }
+            Text("最近所选文件校验：\(dateText(status.number("verified")))。历史校验不保证文件后来仍存在或能完成整机恢复。").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("创建加密备份…") { model.backupPasswordForRestore = false; model.showBackupPassword = true }.disabled(model.busy)
+                Button("仅校验备份，不恢复…") { model.chooseBackup(verifyOnly: true) }.disabled(model.busy)
+                Button("恢复检查清单") { model.showHelp = true }
+            }
+        }
+    }
+}
+
+struct HelpRecoveryView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("使用帮助与恢复检查").font(.title2)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Panel(title: "账号与任务", icon: "person.crop.circle.badge.checkmark") {
+                        Text("先核对当前账号、连接和暂停状态，再在准备与恢复中选择原任务。重启前的旧提示不补发；发送结果未知时先查原会话，不重复发送。")
+                        Button("打开准备与恢复") { model.selection = .setup; dismiss() }
+                    }
+                    Panel(title: "为什么没记录或没回复", icon: "questionmark.circle") {
+                        Text("归档只保存已选择会话及配置起点后的可访问内容。任务页显示本次启动后的最近检查原因；未匹配提示不保存正文，可自行粘贴样例复核。")
+                        HStack { Button("查看归档") { model.selection = .archive; dismiss() }; Button("查看任务") { model.selection = .automation; dismiss() } }
+                    }
+                    Panel(title: "备份和恢复顺序", icon: "externaldrive") {
+                        Text("1. 创建并保管近期备份。\n2. 在设置中仅校验文件和所属账号；这一步不恢复、不关闭任务。\n3. 确实需要恢复时，另行预览并确认；恢复后核对身份和任务。\n业务备份不含登录会话、API或代理密码；完整升级回退副本含登录会话，仅可留在受保护的本机。加密密码丢失无法恢复。")
+                        Button("打开设置与备份") { model.selection = .settings; dismiss() }
+                    }
+                    Panel(title: "排查与反馈", icon: "stethoscope") {
+                        Text("断网、睡眠或退出期间不能实时工作。通知已提交不代表横幅一定展示，可检查通知中心与专注模式。设置提供匿名诊断预览，分享前仍请自行核对。")
+                        Button("查看活动与异常") { model.selection = .activity; dismiss() }
+                        Link("公开问题反馈（仅无私人资料的复现）", destination: URL(string: "https://github.com/Aronlele/communications-assistant/issues")!)
+                        Text("请勿公开发送消息正文、账号资料、手机号、验证码、密码、登录会话或API配置。实验在线策略位于高级设置，默认关闭。当前测试包尚未完成正式API及签名公证。").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            HStack {
+                Button("关闭") { dismiss() }; Spacer()
+                Button("复制版本信息") {
+                    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+                    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString("即讯 \(version)（构建\(build)） · macOS \(ProcessInfo.processInfo.operatingSystemVersionString)", forType: .string)
+                }
+            }
+        }.padding(26).frame(width: 700, height: 620)
+    }
+}
