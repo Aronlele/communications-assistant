@@ -468,6 +468,18 @@ extension Dictionary where Key == String, Value == Any {
     var activityID: Int64 { Int64(number("id")) }
     var executionKey: String { "\(Int64(number("target"))):\(string("number"))" }
     var promptKey: String { "\(Int64(number("target"))):\(Int64(number("message_id")))" }
+    var archiveBody: String {
+        if bool("deleted") { return "这条消息已被删除" }
+        if !string("text").isEmpty { return string("text") }
+        if !string("attachment").isEmpty { return "[\(string("attachment"))]" }
+        if !string("media").isEmpty || ["saved", "not_requested", "failed", "too_large", "unknown_size"].contains(string("media_state")) { return "图片（无文字说明）" }
+        return "无文字内容 · 类型未记录，可尝试补全"
+    }
+}
+
+struct ArchiveRepairItem: Identifiable {
+    let chat: Int64
+    var id: Int64 { chat }
 }
 
 struct ArchiveView: View {
@@ -479,6 +491,7 @@ struct ArchiveView: View {
     @ViewState private var selectedMessage: String?
     @ViewState private var checkedMessages = Set<String>()
     @ViewState private var cleanup: ArchiveCleanupItem?
+    @ViewState private var repair: ArchiveRepairItem?
     @FocusState private var searchFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -518,6 +531,8 @@ struct ArchiveView: View {
                 }
                 Toggle("包含图片", isOn: $model.exportMedia)
                 Button("导入旧记录") { showImport = true }
+                Button("检查旧空记录…") { repair = ArchiveRepairItem(chat: Int64(model.searchChat) ?? 0) }
+                    .disabled(!model.conversations.contains { String($0.chatID) == model.searchChat && $0.string("kind") == "group" } || model.busy)
             }.font(.caption)
             Divider()
             HStack {
@@ -566,6 +581,9 @@ struct ArchiveView: View {
         .onChange(of: model.searchFocusRequest) { _, _ in searchFocused = true }
         .onChange(of: model.searchChat) { _, _ in selectedMessage = nil; model.context = []; model.search() }
         .sheet(item: $cleanup) { ArchiveCleanupView(options: $0.value) }
+        .sheet(item: $repair) { item in
+            ArchiveRepairView(chat: item.chat) { selectedMessage = nil; model.context = []; model.search() }
+        }
         .onChange(of: model.results.map { $0.messageKey }) { _, keys in checkedMessages.formIntersection(Set(keys)) }
         .onChange(of: selectedMessage) { _, key in if let row = model.results.first(where: { $0.messageKey == key }) { model.openContext(row, showSheet: false) } }
         .sheet(isPresented: $showConversations) {
@@ -660,14 +678,15 @@ struct MessageRow: View {
             }
             if !message.string("title").isEmpty { Text(message.string("title")).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
             Text(dateText(message.number("date"))).font(.caption).foregroundStyle(.secondary)
-            Text(message.bool("deleted") ? "这条消息已被删除" : message.string("text").isEmpty ? "[\(message.string("attachment"))]" : message.string("text"))
+            if message.string("attachment") == "群组系统消息" { Label("群组系统消息", systemImage: "info.circle").font(.caption).foregroundStyle(.secondary) }
+            Text(message.archiveBody)
                 .textSelection(.enabled).lineLimit(showContextAction ? 8 : nil)
             if message.bool("edited") { Text("已编辑\(message.number("edited_at") > 0 ? " · " + dateText(message.number("edited_at")) : "")").font(.caption).foregroundStyle(.secondary) }
             HStack {
                 if message.bool("forwarded") { Text("转发消息").font(.caption).foregroundStyle(.secondary) }
                 if message.number("reply_to") > 0 { Text("回复 #\(Int64(message.number("reply_to")))").font(.caption).foregroundStyle(.secondary) }
             }
-            if !message.string("attachment").isEmpty { Text(message.string("attachment")).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+            if !message.string("attachment").isEmpty && message.string("attachment") != "群组系统消息" { Text(message.string("attachment")).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
             HStack {
                 if !message.string("media").isEmpty { Button("查看图片") { model.openMedia(message) } }
                 Spacer()
@@ -1016,5 +1035,58 @@ struct MenuView: View {
             Divider()
             Button("退出即讯") { NSApp.terminate(nil) }.keyboardShortcut("q")
         }.padding(18).frame(width: 310)
+    }
+}
+
+struct ArchiveRepairView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    let chat: Int64
+    let onComplete: () -> Void
+    @ViewState private var preview: Object = [:]
+    @ViewState private var result: Object = [:]
+    @ViewState private var confirming = false
+    var title: String { model.conversations.first { $0.chatID == chat }?.string("title") ?? "当前群组" }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("补全旧空记录").font(.title2)
+            Text("\(model.accountName) · \(title)").font(.headline)
+            Text("只处理此群已有的空归档，每批最多100条。确认前只检查本地；确认后按原消息编号从Telegram读取，不发送消息或下载媒体，不修改任务、归档开关和发送账本。")
+            Text("只有平台仍可访问的系统事件才能补全。已删除、不可访问或其他类型的记录保持原样，不猜造内容；名称使用读取时可见的资料。")
+                .font(.caption).foregroundStyle(.secondary)
+            if !model.error.isEmpty { Text(model.error).foregroundStyle(.orange).textSelection(.enabled) }
+            if !preview.isEmpty {
+                Text("发现 \(Int(preview.number("total"))) 条旧空记录，本批检查 \(Int(preview.number("count"))) 条。")
+                Text("预览5分钟有效，不包括之后新增的消息。请先完成当前群组的历史补档；归档暂停或平台限流时不能补全。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if !result.isEmpty {
+                Text("已补全 \(Int(result.number("repaired"))) 条；平台无法确认 \(Int(result.number("unavailable"))) 条；其他类型 \(Int(result.number("other_type"))) 条；保护跳过 \(Int(result.number("protected"))) 条。剩余 \(Int(result.number("remaining"))) 条空记录。")
+                    .textSelection(.enabled)
+            }
+            if model.demo { Text("演示模式只做本地预览，不访问Telegram或补全记录。").foregroundStyle(.secondary) }
+            Spacer()
+            HStack {
+                Button("关闭", role: .cancel) { dismiss() }.disabled(model.busy)
+                Button("从头预览") { load() }.disabled(model.busy)
+                Button("下一批预览") { load(after: Int64(preview.number("next_id"))) }.disabled(model.busy || !preview.bool("has_more"))
+                Spacer()
+                Button("读取并补全本批…") { confirming = true }
+                    .disabled(model.demo || model.busy || preview.number("count") == 0 || !result.isEmpty)
+            }
+        }.padding(26).frame(width: 650, height: 440)
+        .onAppear { load() }
+        .alert("确认补全当前群组的旧空归档", isPresented: $confirming) {
+            Button("取消", role: .cancel) { }
+            Button("读取并补全") {
+                model.request("archive_repair_apply", ["token": preview.string("token"), "confirmed_account": Int64(model.state.number("account"))]) { value in
+                    if let value { result = value; onComplete() }
+                }
+            }
+        } message: { Text("账号：\(model.accountName)\n群组：\(title)\n本批最多\(Int(preview.number("count")))条。网络读取失败不改原记录，不自动循环或重试。") }
+    }
+    func load(after: Int64 = 0) {
+        result = [:]; preview = [:]
+        model.request("archive_repair_preview", ["chat": chat, "after_id": after]) { preview = $0 ?? [:] }
     }
 }

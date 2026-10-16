@@ -148,6 +148,11 @@ struct AccountsProbe {
         check(FileManager.default.fileExists(atPath: file.path), "校验失败不删除其他文件或修改应用")
         model.prepareUpgrade(file, offer: valid, allowUnsigned: true)
         check(model.error.contains("不能替换"), "演示模式不能升级工作应用")
+        check((["text": "", "attachment": ""] as Object).archiveBody.contains("类型未记录"), "旧空记录不能显示空方括号")
+        check((["text": "[]", "attachment": ""] as Object).archiveBody == "[]", "用户真正发送的方括号保持原文")
+        check((["text": "系统事件说明", "attachment": "群组系统消息"] as Object).archiveBody == "系统事件说明", "系统消息显示可读说明")
+        check((["deleted": true, "text": "旧事件"] as Object).archiveBody == "这条消息已被删除", "删除状态优先于事件说明")
+        check((["text": "", "media_state": "not_requested"] as Object).archiveBody == "图片（无文字说明）", "图片空说明与未知消息区分")
         print("Native multi-account and readiness state: \(checks) checks passed")
         exit(0)
     }

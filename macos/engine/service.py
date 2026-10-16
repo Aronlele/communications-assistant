@@ -19,6 +19,8 @@ from telethon import TelegramClient, events, functions, types
 from telethon.errors import FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError, PasswordHashInvalidError, PhoneNumberInvalidError, PhoneNumberBannedError
 
 from engine.archive_cleanup import command as archive_cleanup_command
+from engine.archive_repair import command as archive_repair_command
+from engine.message_content import GroupServiceMessage, service_content
 from engine.issues import issues
 from engine.network import command as network_command, configuration as proxy_configuration, telethon_proxy
 from engine.automation import Automation
@@ -48,6 +50,7 @@ class Service:
         self.demo = demo
         self.system_zone = system_zone
         self.archive_cleanup = None
+        self.archive_repair = None
         self.client = None
         self.account = 0
         self.auth = "disconnected"
@@ -312,6 +315,8 @@ class Service:
             self.require_account()
             if method.startswith('archive_cleanup_'):
                 return await archive_cleanup_command(self, method, args)
+            if method.startswith('archive_repair_'):
+                return await archive_repair_command(self, method, args)
             if method == 'issues': return {'rows': issues(self)}
             if method.startswith('task_') or method == 'setup_complete':
                 return await task_command(self, method, args)
@@ -586,6 +591,7 @@ class Service:
         self.active_proxy = proxy_configuration(proxy)
         self.active_profile = dict(self.device_profile)
         self.client.add_event_handler(self.new_message, events.NewMessage())
+        self.client.add_event_handler(self.group_service_message, GroupServiceMessage())
         self.client.add_event_handler(self.edited_message, events.MessageEdited())
         self.client.add_event_handler(self.deleted_message, events.MessageDeleted())
         try:
@@ -867,6 +873,20 @@ class Service:
                                      "voice_text": title + f"收到{count}条新消息" + ("。" + text[:500] if cfg["voice_content"] else "")})
         await self.activity("reminder", f"已请求{'系统' if notify else '语音'}提醒：{count} 条消息")
 
+    async def group_service_message(self, event):
+        if self.auth != 'ready' or self.archive_blocked(): return
+        row = self.store.conversation(self.account, event.chat_id)
+        if not row or row['kind'] != 'group' or not row['selected']: return
+        try:
+            async with self.chat_locks[event.chat_id]:
+                await self.archive_messages(event.chat_id, [event.message])
+            await self.publish()
+        except FloodWaitError as exc:
+            self.cooldown = time.time() + exc.seconds
+        except Exception as exc:
+            if storage_error(exc): self.fail_closed()
+            else: self.error = f'群组系统消息归档未完成（{type(exc).__name__}）'
+
     async def edited_message(self, event):
         if self.auth != "ready":
             return
@@ -990,9 +1010,10 @@ class Service:
             title = title or getattr(sender, "title", "") or str(message.sender_id or "")
             file = message.file
             attachment = file.name or file.mime_type or "附件" if file else ""
+            content = service_content(message, title)
             record = {"id": message.id, "date": message.date.timestamp(), "sender": title,
-                      "text": message.raw_text or "", "outgoing": message.out,
-                      "attachment": attachment, "edited": edited or bool(getattr(message, "edit_date", None))}
+                      "text": content['text'] if content else message.raw_text or "", "outgoing": message.out,
+                      "attachment": content['attachment'] if content else attachment, "edited": edited or bool(getattr(message, "edit_date", None))}
             reply = getattr(message, "reply_to", None)
             media = getattr(message, "photo", None) or getattr(message, "document", None)
             record.update(reply_to=getattr(reply, "reply_to_msg_id", 0) or 0,

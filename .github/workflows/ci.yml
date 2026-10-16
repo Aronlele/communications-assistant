@@ -33,6 +33,7 @@ jobs:
       - run: bash scripts/test-native.sh
       - run: bash macos/scripts/build.sh
       - run: python3 macos/scripts/smoke.py output/macos/通讯助手.app/Contents/Resources/Engine/tgengine
+      - run: python3 macos/scripts/smoke_service_messages.py output/macos/通讯助手.app/Contents/Resources/Engine/tgengine
       - run: codesign --verify --deep --strict output/macos/通讯助手.app
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

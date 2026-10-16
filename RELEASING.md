@@ -10,15 +10,15 @@ bash scripts/test-native.sh
 TGA_RELEASE=1 TGA_OUTPUT_ROOT="$PWD/output/release-preview" bash macos/scripts/build.sh
 python3 macos/scripts/smoke.py output/release-preview/通讯助手.app/Contents/Resources/Engine/tgengine
 codesign --verify --deep --strict output/release-preview/通讯助手.app
-hdiutil verify output/release-preview/通讯助手-0.6.0-arm64.dmg
-python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.6.0-macOS-arm64.pkg output/release-preview/通讯助手.app
+hdiutil verify output/release-preview/通讯助手-0.6.1-arm64.dmg
+python3 macos/scripts/check_installer.py output/release-preview/CommunicationsAssistant-0.6.1-macOS-arm64.pkg output/release-preview/通讯助手.app
 ```
 
 API 配置仅用于签名前生成资源，不加入 Git。发布说明须写明 TEST ONLY、临时签名、实际验证环境及待验收范围；正式产品 API 尚未就绪。
 
 构建默认生成 PKG、DMG、ZIP；PKG 是网站的首选入口。已有验收通过的应用可单独运行 `bash macos/scripts/package_installer.sh /绝对路径/通讯助手.app`，随后执行 `check_installer.py` 验证载荷与原应用一致，不需要重签应用或替换正在运行的副本。安装器没有安装脚本，不触碰用户资料、不下载依赖、不自动启动应用；系统安装器负责固定目录与升级检查。当前只生成未签名、未公证的测试安装器。
 
-提交 main，创建与包版本一致的 v0.6.0 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
+提交 main，创建与包版本一致的 v0.6.1 标签，在公开 Release 上传 PKG、DMG、ZIP、SHA256SUMS、最新中文使用说明、发布元数据和离线展示页。下载无需 GitHub 登录，标签必须指向实际应用代码。多行发布说明使用文件传入 CLI。
 
 对已有 v0.3.3 补充 PKG 时不移动标签、不重建 DMG/ZIP；保留原 `source_commit`，另记 `installer_commit`、`website_commit` 及实际验证范围。安装交付脚本以该提交为复现依据，不能假称原应用标签已含后补脚本。
 
@@ -38,7 +38,7 @@ docs 只包含可展示的 HTML/CSS/SVG 和演示截图，下载链接指向公�
 
 ## 升级与回滚
 
-退出应用再替换 .app，不清空用户资料，重启后逐账号确认并重新开启规则。回滚前核对数据库兼容性，未知版本停止发送。备份不包含会话或 API 凭据。
+退出应用再替换 .app，不清空用户资料，重启后逐账号确认并重新开启规则。回滚前核对数据库兼容性，未知版本停止发送。业务备份不包含会话或 API 凭据；完整本机升级回退副本包含登录会话，须受保护且不可分享。
 
 ## 0.4.0 已验收包同步
 
@@ -74,3 +74,9 @@ python3 scripts/prepare_release.py --source output/macos-0.4.0-candidate --verif
 独立发行目录`output/macos-0.6.0-release/`包含最新包内帮助。先完成237项Python、77项原生及实际冻结引擎、安装包载荷/权限/完整性检查。用户本次另行授权升级：结束0.5.0观察，正常退出并完整备份资料、旧应用和偏好，经系统PKG安装后按原启用集合恢复两个账号的两条任务。工作数据库仍schema5，比较配置只允许重新启用时间变化。0.6.0观察从2026-10-16 15:56:06至预计2026-10-19 15:56:06（北京时间），尚未通过；0.5.0的3.518小时不合并。
 
 源码提交及v0.6.0标签与实际应用代码一致，发布元数据仅摘取脱敏检查和本版观察起止时间；不上传完整备份、工作资料、原始升级报告或观察样本。公开附件校验后再手动部署Pages。
+
+## 0.6.1发布与原位升级
+
+独立发行构建包含最新说明；251项Python、82项原生、打包引擎及服务消息冒烟、PKG/DMG/ZIP检查通过后再发布。升级前正常退出，完整备份资料、会话、旧应用与偏好；系统安装器原位安装，按升级前启用集合恢复原任务。旧空记录通过应用已有引擎逐群预览与确认，报告可恢复与不可恢复数量，不另建客户端或发送验收消息。
+
+用户明确取消本轮72小时观察：停止采样并删除自动复查，不启动新版观察，元数据标记cancelled_by_user且未通过，不传入旧版summary。历史观察和计划中断证据保留。仅上传脱敏发布附件，不上传升级备份或真实消息。公开附件核对后再部署Pages。
